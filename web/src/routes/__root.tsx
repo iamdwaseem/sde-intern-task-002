@@ -1,5 +1,11 @@
 import { createRootRoute, Outlet } from '@tanstack/react-router'
+import { Header } from '../components/Header.tsx'
 
 export const Route = createRootRoute({
-  component: () => <Outlet />,
+  component: () => (
+    <>
+      <Header />
+      <Outlet />
+    </>
+  ),
 })
