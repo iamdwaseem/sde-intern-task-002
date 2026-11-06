@@ -603,6 +603,146 @@ body {
   outline-offset: 2px;
 }
 
+/* Individual Share Payments */
+.ledger-table tr.bill-shares-row td.bill-shares-cell,
+.ledger-table td.bill-shares-cell:last-child {
+  background-color: var(--color-surface-subtle);
+  border-bottom: 1px solid var(--color-border);
+  padding: var(--space-3) var(--space-6);
+  width: auto;
+  text-align: left;
+}
+
+.bill-shares-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.bill-shares-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+.share-pill-card {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 6px 12px;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-subtle);
+  min-width: 200px;
+  flex: 1 1 200px;
+  max-width: 320px;
+  transition: border-color var(--duration-snappy) var(--ease-out);
+}
+
+.share-pill-card.share-paid {
+  background-color: rgba(91, 117, 32, 0.04);
+  border-color: rgba(91, 117, 32, 0.2);
+}
+
+.share-pill-card.share-unpaid {
+  border-color: var(--color-border);
+}
+
+.share-pill-user {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.share-pill-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background-color: var(--color-primary-light);
+  color: var(--color-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.share-paid .share-pill-avatar {
+  background-color: var(--color-secondary-light);
+  color: var(--color-secondary);
+}
+
+.share-pill-details {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.share-pill-name {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.share-pill-amount {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.share-pill-action {
+  flex-shrink: 0;
+}
+
+.btn-pay-share {
+  font-family: var(--font-sans);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  background-color: var(--color-primary);
+  color: var(--color-surface);
+  border: 1px solid var(--color-primary);
+  cursor: pointer;
+  box-shadow: var(--shadow-subtle);
+  transition:
+    transform var(--duration-snappy) var(--ease-out),
+    background-color var(--duration-snappy) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn-pay-share:hover:not(:disabled) {
+    background-color: var(--color-primary-hover);
+  }
+}
+
+.btn-pay-share:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn-pay-share:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-pay-share:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
 /* Right Column: Member Balances Ledger */
 .member-list {
   list-style: none;
@@ -1707,6 +1847,19 @@ body {
   .ledger-table td:last-child {
     width: 82px;
     text-align: right;
+  }
+
+  .ledger-table tr.bill-shares-row td.bill-shares-cell,
+  .ledger-table td.bill-shares-cell:last-child {
+    width: 100%;
+    text-align: left;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .share-pill-card {
+    min-width: 100%;
+    max-width: 100%;
+    padding: 6px 10px;
   }
 
   .bill-title {

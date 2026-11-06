@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { ApiClient } from '../api/client.ts'
-import type { BalancesResponse, StoredHomeSession } from '../api/types.ts'
+import type { BalancesResponse, PayShareResponse, StoredHomeSession } from '../api/types.ts'
 import { ACTIVE_HOME_STORAGE_KEY, getHomeStorageKey } from '../api/types.ts'
 import {
   addHouseholdBill,
@@ -16,6 +16,7 @@ import {
   isStoredShare,
   loadActiveHomeId,
   loadHomeSession,
+  payHouseholdShare,
   persistNewHouseholdSession,
   reconcileHouseholdRoster,
   restoreHouseholdSession,
@@ -1771,6 +1772,505 @@ describe('addHouseholdBill Workflow & History Persistence', () => {
       assert.strictEqual(result.status, 'invalid_home')
       assert.strictEqual(loadActiveHomeId(storage), null)
       assert.strictEqual(loadHomeSession('h-deleted', storage), null)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
+describe('payHouseholdShare Workflow & Idempotency', () => {
+  const baseSession: StoredHomeSession = {
+    version: 1,
+    home: { id: 'h-100', name: 'Pinecrest Manor' },
+    members: [
+      { id: 'm-1', homeId: 'h-100', name: 'Julian' },
+      { id: 'm-2', homeId: 'h-100', name: 'Avery' },
+    ],
+    bills: [
+      {
+        id: 'b-1',
+        homeId: 'h-100',
+        title: 'Water Utility',
+        totalCents: 5000,
+        clientCreatedAt: '2026-11-06T10:00:00Z',
+        shares: [
+          { id: 's-1', memberId: 'm-1', amountCents: 2500, paidAt: null },
+          { id: 's-2', memberId: 'm-2', amountCents: 2500, paidAt: null },
+        ],
+      },
+    ],
+    cachedBalances: [
+      { memberId: 'm-1', name: 'Julian', outstandingCents: 2500 },
+      { memberId: 'm-2', name: 'Avery', outstandingCents: 2500 },
+    ],
+    pendingMemberCreation: null,
+    updatedAt: '2026-11-06T10:00:00Z',
+  }
+
+  it('processes successful payment, clears idempotency key, refreshes balances, and persists history', async () => {
+    const storage = createMockStorage({
+      [ACTIVE_HOME_STORAGE_KEY]: 'h-100',
+      [getHomeStorageKey('h-100')]: JSON.stringify(baseSession),
+    })
+
+    const originalFetch = globalThis.fetch
+    try {
+      let sentIdempotencyKey: string | undefined
+      globalThis.fetch = async (input, init) => {
+        const url = String(input)
+        if (url.includes('/api/bills/b-1/shares/s-1/pay')) {
+          sentIdempotencyKey = (init?.headers as Record<string, string> | undefined)?.[
+            'Idempotency-Key'
+          ]
+          assert.ok(sentIdempotencyKey, 'Idempotency-Key header must be sent')
+          const res: PayShareResponse = {
+            id: 's-1',
+            memberId: 'm-1',
+            amountCents: 2500,
+            paidAt: '2026-11-06T12:00:00Z',
+          }
+          return new Response(JSON.stringify(res), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/homes/h-100/balances')) {
+          const res: BalancesResponse = {
+            balances: [
+              { memberId: 'm-1', name: 'Julian', outstandingCents: 0 },
+              { memberId: 'm-2', name: 'Avery', outstandingCents: 2500 },
+            ],
+          }
+          return new Response(JSON.stringify(res), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        throw new Error(`Unexpected fetch URL: ${url}`)
+      }
+
+      const client = new ApiClient()
+      const result = await payHouseholdShare(client, baseSession, 'b-1', 's-1', storage)
+
+      assert.strictEqual(result.status, 'success')
+      assert.ok(result.share)
+      assert.strictEqual(result.share.paidAt, '2026-11-06T12:00:00Z')
+      assert.strictEqual(result.share.pendingIdempotencyKey, null)
+
+      assert.ok(result.session)
+      const targetShare = result.session.bills[0]?.shares.find((s) => s.id === 's-1')
+      assert.strictEqual(targetShare?.paidAt, '2026-11-06T12:00:00Z')
+      assert.strictEqual(targetShare?.pendingIdempotencyKey, null)
+
+      // Authoritative balances refreshed
+      const julianBalance = result.session.cachedBalances?.find((b) => b.memberId === 'm-1')
+      assert.strictEqual(julianBalance?.outstandingCents, 0)
+
+      // Storage updated
+      const persisted = loadHomeSession('h-100', storage)
+      assert.ok(persisted)
+      assert.strictEqual(persisted.bills[0]?.shares[0]?.paidAt, '2026-11-06T12:00:00Z')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('network failure keeps share unpaid and preserves idempotency key, then retry succeeds using the exact same key', async () => {
+    const storage = createMockStorage({
+      [ACTIVE_HOME_STORAGE_KEY]: 'h-100',
+      [getHomeStorageKey('h-100')]: JSON.stringify(baseSession),
+    })
+
+    const originalFetch = globalThis.fetch
+    try {
+      let attempts = 0
+      const capturedKeys: string[] = []
+
+      globalThis.fetch = async (input, init) => {
+        const url = String(input)
+        if (url.includes('/pay')) {
+          attempts++
+          const key = (init?.headers as Record<string, string> | undefined)?.['Idempotency-Key']
+          if (key) capturedKeys.push(key)
+
+          if (attempts === 1) {
+            // Simulate network offline drop
+            throw new TypeError('Failed to fetch')
+          }
+
+          const res: PayShareResponse = {
+            id: 's-1',
+            memberId: 'm-1',
+            amountCents: 2500,
+            paidAt: '2026-11-06T12:30:00Z',
+          }
+          return new Response(JSON.stringify(res), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+
+        if (url.includes('/balances')) {
+          const res: BalancesResponse = {
+            balances: [
+              { memberId: 'm-1', name: 'Julian', outstandingCents: 0 },
+              { memberId: 'm-2', name: 'Avery', outstandingCents: 2500 },
+            ],
+          }
+          return new Response(JSON.stringify(res), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+
+        throw new Error(`Unexpected URL: ${url}`)
+      }
+
+      const client = new ApiClient()
+
+      // First attempt: fails with network error
+      const result1 = await payHouseholdShare(client, baseSession, 'b-1', 's-1', storage)
+      assert.strictEqual(result1.status, 'api_unavailable')
+      assert.ok(result1.session)
+      const share1 = result1.session.bills[0]?.shares.find((s) => s.id === 's-1')
+      assert.strictEqual(share1?.paidAt, null) // Must remain visually unpaid!
+      assert.ok(share1?.pendingIdempotencyKey)
+      assert.strictEqual(capturedKeys.length, 1)
+      assert.strictEqual(share1.pendingIdempotencyKey, capturedKeys[0])
+
+      // Storage persisted the key before network failure
+      const persistedAfterFail = loadHomeSession('h-100', storage)
+      assert.strictEqual(
+        persistedAfterFail?.bills[0]?.shares[0]?.pendingIdempotencyKey,
+        capturedKeys[0],
+      )
+
+      // Second attempt (retry): must send EXACT SAME idempotency key
+      const result2 = await payHouseholdShare(client, result1.session, 'b-1', 's-1', storage)
+      assert.strictEqual(result2.status, 'success')
+      assert.strictEqual(capturedKeys.length, 2)
+      assert.strictEqual(
+        capturedKeys[0],
+        capturedKeys[1],
+        'Must reuse exact same idempotency key on retry',
+      )
+
+      const share2 = result2.session?.bills[0]?.shares.find((s) => s.id === 's-1')
+      assert.strictEqual(share2?.paidAt, '2026-11-06T12:30:00Z')
+      assert.strictEqual(share2?.pendingIdempotencyKey, null)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('500 server error preserves idempotency key and allows retry with the same key', async () => {
+    const storage = createMockStorage({
+      [ACTIVE_HOME_STORAGE_KEY]: 'h-100',
+      [getHomeStorageKey('h-100')]: JSON.stringify(baseSession),
+    })
+
+    const originalFetch = globalThis.fetch
+    try {
+      let attempts = 0
+      const capturedKeys: string[] = []
+
+      globalThis.fetch = async (input, init) => {
+        const url = String(input)
+        if (url.includes('/pay')) {
+          attempts++
+          const key = (init?.headers as Record<string, string> | undefined)?.['Idempotency-Key']
+          if (key) capturedKeys.push(key)
+
+          if (attempts === 1) {
+            return new Response(JSON.stringify({ error: 'Internal Server Error' }), {
+              status: 500,
+              headers: { 'Content-Type': 'application/json' },
+            })
+          }
+
+          const res: PayShareResponse = {
+            id: 's-1',
+            memberId: 'm-1',
+            amountCents: 2500,
+            paidAt: '2026-11-06T13:00:00Z',
+          }
+          return new Response(JSON.stringify(res), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+
+        if (url.includes('/balances')) {
+          const res: BalancesResponse = {
+            balances: [
+              { memberId: 'm-1', name: 'Julian', outstandingCents: 0 },
+              { memberId: 'm-2', name: 'Avery', outstandingCents: 2500 },
+            ],
+          }
+          return new Response(JSON.stringify(res), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+
+        throw new Error(`Unexpected URL: ${url}`)
+      }
+
+      const client = new ApiClient()
+
+      // Attempt 1: 500 error
+      const result1 = await payHouseholdShare(client, baseSession, 'b-1', 's-1', storage)
+      assert.strictEqual(result1.status, 'api_unavailable')
+      assert.ok(result1.session)
+      const share1 = result1.session.bills[0]?.shares.find((s) => s.id === 's-1')
+      assert.strictEqual(share1?.paidAt, null) // Visually unpaid
+      assert.ok(share1?.pendingIdempotencyKey)
+
+      // Attempt 2: retry succeeds with the same key
+      const result2 = await payHouseholdShare(client, result1.session, 'b-1', 's-1', storage)
+      assert.strictEqual(result2.status, 'success')
+      assert.strictEqual(capturedKeys.length, 2)
+      assert.strictEqual(capturedKeys[0], capturedKeys[1], 'Must reuse idempotency key after 500')
+      assert.strictEqual(result2.session?.bills[0]?.shares[0]?.paidAt, '2026-11-06T13:00:00Z')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('409 conflict keeps share visually unpaid and reports conflict without inventing a paid state', async () => {
+    const storage = createMockStorage({
+      [ACTIVE_HOME_STORAGE_KEY]: 'h-100',
+      [getHomeStorageKey('h-100')]: JSON.stringify(baseSession),
+    })
+
+    const originalFetch = globalThis.fetch
+    try {
+      globalThis.fetch = async (input) => {
+        const url = String(input)
+        if (url.includes('/pay')) {
+          return new Response(JSON.stringify({ error: 'Share has already been paid' }), {
+            status: 409,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        throw new Error(`Unexpected URL: ${url}`)
+      }
+
+      const client = new ApiClient()
+      const result = await payHouseholdShare(client, baseSession, 'b-1', 's-1', storage)
+
+      assert.strictEqual(result.status, 'conflict')
+      assert.ok(result.error)
+      assert.match(result.error, /conflict/i)
+
+      // Share must NEVER be marked as paid
+      assert.ok(result.session)
+      const share = result.session.bills[0]?.shares.find((s) => s.id === 's-1')
+      assert.strictEqual(share?.paidAt, null, 'Conflict must never invent a paid state')
+
+      // Storage also must not show paid
+      const persisted = loadHomeSession('h-100', storage)
+      assert.strictEqual(persisted?.bills[0]?.shares[0]?.paidAt, null)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('aborts payment request without sending fetch if pre-persistence of idempotency key fails', async () => {
+    let fetchCalled = false
+    const originalFetch = globalThis.fetch
+    try {
+      globalThis.fetch = async () => {
+        fetchCalled = true
+        return new Response('{}', { status: 200 })
+      }
+
+      const failingStorage = createMockStorage()
+      failingStorage.setItem = () => {
+        throw new Error('Storage write quota exceeded')
+      }
+
+      const client = new ApiClient()
+      const result = await payHouseholdShare(client, baseSession, 'b-1', 's-1', failingStorage)
+
+      assert.strictEqual(result.status, 'storage_error')
+      assert.strictEqual(
+        fetchCalled,
+        false,
+        'HTTP payment request must NEVER be sent if storage write fails',
+      )
+      assert.ok(result.persistenceWarning)
+      assert.match(result.persistenceWarning, /write failed/i)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('retains updated paid share in memory with persistence warning if post-payment persistence fails', async () => {
+    let writeCount = 0
+    const mockStore = new Map<string, string>([
+      [ACTIVE_HOME_STORAGE_KEY, 'h-100'],
+      [getHomeStorageKey('h-100'), JSON.stringify(baseSession)],
+    ])
+
+    const partialStorage: Storage = {
+      get length() {
+        return mockStore.size
+      },
+      clear() {
+        mockStore.clear()
+      },
+      getItem(key: string) {
+        return mockStore.get(key) ?? null
+      },
+      key(index: number) {
+        return Array.from(mockStore.keys())[index] ?? null
+      },
+      removeItem(key: string) {
+        mockStore.delete(key)
+      },
+      setItem(key: string, value: string) {
+        writeCount++
+        if (writeCount > 1) {
+          // Fail on the post-payment write!
+          throw new Error('Disk write failed post-payment')
+        }
+        mockStore.set(key, String(value))
+      },
+    }
+
+    const originalFetch = globalThis.fetch
+    try {
+      globalThis.fetch = async (input) => {
+        const url = String(input)
+        if (url.includes('/pay')) {
+          const res: PayShareResponse = {
+            id: 's-1',
+            memberId: 'm-1',
+            amountCents: 2500,
+            paidAt: '2026-11-06T14:00:00Z',
+          }
+          return new Response(JSON.stringify(res), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/balances')) {
+          const res: BalancesResponse = {
+            balances: [
+              { memberId: 'm-1', name: 'Julian', outstandingCents: 0 },
+              { memberId: 'm-2', name: 'Avery', outstandingCents: 2500 },
+            ],
+          }
+          return new Response(JSON.stringify(res), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        throw new Error(`Unexpected URL: ${url}`)
+      }
+
+      const client = new ApiClient()
+      const result = await payHouseholdShare(client, baseSession, 'b-1', 's-1', partialStorage)
+
+      assert.strictEqual(result.status, 'success')
+      assert.ok(result.session)
+      assert.strictEqual(result.session.bills[0]?.shares[0]?.paidAt, '2026-11-06T14:00:00Z')
+      assert.strictEqual(result.session.bills[0]?.shares[0]?.pendingIdempotencyKey, null)
+      assert.ok(result.persistenceWarning)
+      assert.match(result.persistenceWarning, /local storage could not save/i)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('guarantees failed payments are never rendered as paid across network, 500, 409, and storage failures', async () => {
+    const client = new ApiClient()
+    const originalFetch = globalThis.fetch
+
+    try {
+      // 1. Network failure
+      globalThis.fetch = async () => {
+        throw new TypeError('Network connection lost')
+      }
+      const storage1 = createMockStorage({
+        [ACTIVE_HOME_STORAGE_KEY]: 'h-100',
+        [getHomeStorageKey('h-100')]: JSON.stringify(baseSession),
+      })
+      const netResult = await payHouseholdShare(client, baseSession, 'b-1', 's-1', storage1)
+      assert.strictEqual(
+        'session' in netResult && netResult.session
+          ? netResult.session.bills[0]?.shares[0]?.paidAt
+          : null,
+        null,
+      )
+
+      // 2. 500 Internal Server Error
+      globalThis.fetch = async () =>
+        new Response(JSON.stringify({ error: 'Crash' }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      const storage2 = createMockStorage({
+        [ACTIVE_HOME_STORAGE_KEY]: 'h-100',
+        [getHomeStorageKey('h-100')]: JSON.stringify(baseSession),
+      })
+      const s500Result = await payHouseholdShare(client, baseSession, 'b-1', 's-1', storage2)
+      assert.strictEqual(
+        'session' in s500Result && s500Result.session
+          ? s500Result.session.bills[0]?.shares[0]?.paidAt
+          : null,
+        null,
+      )
+
+      // 3. 504 Gateway Timeout
+      globalThis.fetch = async () =>
+        new Response(JSON.stringify({ error: 'Gateway timeout' }), {
+          status: 504,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      const storage3 = createMockStorage({
+        [ACTIVE_HOME_STORAGE_KEY]: 'h-100',
+        [getHomeStorageKey('h-100')]: JSON.stringify(baseSession),
+      })
+      const s504Result = await payHouseholdShare(client, baseSession, 'b-1', 's-1', storage3)
+      assert.strictEqual(
+        'session' in s504Result && s504Result.session
+          ? s504Result.session.bills[0]?.shares[0]?.paidAt
+          : null,
+        null,
+      )
+
+      // 4. 409 Conflict
+      globalThis.fetch = async () =>
+        new Response(JSON.stringify({ error: 'Conflict' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      const storage4 = createMockStorage({
+        [ACTIVE_HOME_STORAGE_KEY]: 'h-100',
+        [getHomeStorageKey('h-100')]: JSON.stringify(baseSession),
+      })
+      const s409Result = await payHouseholdShare(client, baseSession, 'b-1', 's-1', storage4)
+      assert.strictEqual(
+        'session' in s409Result && s409Result.session
+          ? s409Result.session.bills[0]?.shares[0]?.paidAt
+          : null,
+        null,
+      )
+
+      // 5. Pre-request storage error
+      const storage5 = createMockStorage()
+      storage5.setItem = () => {
+        throw new Error('Quota error')
+      }
+      const storageErrResult = await payHouseholdShare(client, baseSession, 'b-1', 's-1', storage5)
+      assert.strictEqual(
+        'session' in storageErrResult && storageErrResult.session
+          ? storageErrResult.session.bills[0]?.shares[0]?.paidAt
+          : null,
+        null,
+      )
     } finally {
       globalThis.fetch = originalFetch
     }

@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { BillComposer } from '../components/BillComposer.tsx'
 import { useHousehold } from '../context/HouseholdContext.tsx'
 import { formatCents } from '../utils/money.ts'
@@ -28,19 +28,25 @@ function HouseholdLedgerView() {
     homeError,
     memberError,
     billError,
+    paymentError,
+    paymentSuccess,
     persistenceWarning,
     pendingMember,
     isSubmittingHome,
     isSubmittingMember,
     isSubmittingBill,
+    processingShareId,
     isReconciling,
     createHousehold,
     addMember,
     createBill,
+    payShare,
     reconcileRoster,
     dismissRecoveryBanner,
     dismissPersistenceWarning,
     dismissBillError,
+    dismissPaymentError,
+    dismissPaymentSuccess,
   } = useHousehold()
 
   const [homeNameInput, setHomeNameInput] = useState('')
@@ -415,38 +421,102 @@ function HouseholdLedgerView() {
                   }
 
                   return (
-                    <tr key={bill.id}>
-                      <td>
-                        <div className="bill-item">
-                          <span className="bill-title">{bill.title}</span>
-                          <div className="bill-submeta">
-                            <span className="bill-date">
-                              {formatBillDate(bill.clientCreatedAt)}
-                            </span>
-                            <span className="bill-allocation-mobile tabular-numbers">
-                              • {allocationText}
-                            </span>
+                    <Fragment key={bill.id}>
+                      <tr className="bill-primary-row">
+                        <td>
+                          <div className="bill-item">
+                            <span className="bill-title">{bill.title}</span>
+                            <div className="bill-submeta">
+                              <span className="bill-date">
+                                {formatBillDate(bill.clientCreatedAt)}
+                              </span>
+                              <span className="bill-allocation-mobile tabular-numbers">
+                                • {allocationText}
+                              </span>
+                            </div>
                           </div>
-                        </div>
-                      </td>
-                      <td className="bill-allocation-desktop">
-                        <span className="tabular-numbers">{allocationText}</span>
-                      </td>
-                      <td>
-                        <span className="bill-amount tabular-numbers">
-                          {formatCents(bill.totalCents)}
-                        </span>
-                      </td>
-                      <td>
-                        {isFullySettled ? (
-                          <span className="badge badge-settled">Settled</span>
-                        ) : (
-                          <span className="badge badge-unsettled">
-                            {pendingSharesCount} Pending
+                        </td>
+                        <td className="bill-allocation-desktop">
+                          <span className="tabular-numbers">{allocationText}</span>
+                        </td>
+                        <td>
+                          <span className="bill-amount tabular-numbers">
+                            {formatCents(bill.totalCents)}
                           </span>
-                        )}
-                      </td>
-                    </tr>
+                        </td>
+                        <td>
+                          {isFullySettled ? (
+                            <span className="badge badge-settled">Settled</span>
+                          ) : (
+                            <span className="badge badge-unsettled">
+                              {pendingSharesCount} Pending
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                      {bill.shares.length > 0 && (
+                        <tr className="bill-shares-row">
+                          <td colSpan={4} className="bill-shares-cell">
+                            <div className="bill-shares-container">
+                              <div className="bill-shares-grid">
+                                {bill.shares.map((share) => {
+                                  const member = session.members.find(
+                                    (m) => m.id === share.memberId,
+                                  )
+                                  const memberName = member ? member.name : 'Resident'
+                                  const isPaid = share.paidAt !== null
+                                  const isProcessing = processingShareId === share.id
+
+                                  return (
+                                    <div
+                                      key={share.id}
+                                      className={`share-pill-card ${isPaid ? 'share-paid' : 'share-unpaid'}`}
+                                    >
+                                      <div className="share-pill-user">
+                                        <div className="share-pill-avatar" aria-hidden="true">
+                                          {getInitials(memberName)}
+                                        </div>
+                                        <div className="share-pill-details">
+                                          <span className="share-pill-name">{memberName}</span>
+                                          <span className="share-pill-amount tabular-numbers">
+                                            {formatCents(share.amountCents)}
+                                          </span>
+                                        </div>
+                                      </div>
+
+                                      <div className="share-pill-action">
+                                        {isPaid ? (
+                                          <span
+                                            className="badge badge-settled"
+                                            title={`Paid at ${share.paidAt}`}
+                                          >
+                                            ✓ Paid
+                                          </span>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            className="btn-pay-share"
+                                            onClick={() => payShare(bill.id, share.id)}
+                                            disabled={processingShareId !== null}
+                                            aria-label={`Pay ${formatCents(share.amountCents)} share for ${memberName}`}
+                                          >
+                                            {isProcessing
+                                              ? 'Paying...'
+                                              : share.pendingIdempotencyKey
+                                                ? 'Retry Pay'
+                                                : 'Pay'}
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   )
                 })}
               </tbody>
@@ -538,6 +608,65 @@ function HouseholdLedgerView() {
                 type="button"
                 className="banner-dismiss-btn"
                 onClick={() => setBillSuccess(null)}
+                style={{ marginLeft: 'var(--space-3)', color: 'inherit' }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {/* Payment Feedback Notifications */}
+          {paymentError && (
+            <div
+              style={{
+                margin: 'var(--space-4) var(--space-6) 0',
+                padding: 'var(--space-3) var(--space-4)',
+                backgroundColor: 'var(--color-highlight-light)',
+                border: '1px solid #eed0c8',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: '0.8125rem',
+                color: '#732314',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+              role="alert"
+              aria-live="assertive"
+            >
+              <span>{paymentError}</span>
+              <button
+                type="button"
+                className="banner-dismiss-btn"
+                onClick={dismissPaymentError}
+                style={{ marginLeft: 'var(--space-3)', color: 'inherit' }}
+              >
+                Dismiss
+              </button>
+            </div>
+          )}
+
+          {paymentSuccess && (
+            <div
+              style={{
+                margin: 'var(--space-4) var(--space-6) 0',
+                padding: 'var(--space-3) var(--space-4)',
+                backgroundColor: 'var(--color-secondary-light)',
+                border: '1px solid rgba(91, 117, 32, 0.25)',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: '0.8125rem',
+                color: 'var(--color-secondary)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+              role="status"
+              aria-live="polite"
+            >
+              <span>{paymentSuccess}</span>
+              <button
+                type="button"
+                className="banner-dismiss-btn"
+                onClick={dismissPaymentSuccess}
                 style={{ marginLeft: 'var(--space-3)', color: 'inherit' }}
               >
                 Dismiss

@@ -9,6 +9,7 @@ import {
   type Home,
   type Member,
   type MemberBalance,
+  type PayShareResponse,
   type PendingMemberCreation,
   type SessionRecoveryResult,
   type Share,
@@ -962,6 +963,223 @@ export async function addHouseholdBill(
   return {
     status: 'success',
     bill: storedBill,
+    session: updatedSession,
+    persistenceWarning,
+  }
+}
+
+export type PayShareResult =
+  | {
+      status: 'success'
+      bill: StoredBill
+      share: StoredShare
+      session: StoredHomeSession
+      persistenceWarning?: string
+    }
+  | {
+      status: 'storage_error'
+      session: StoredHomeSession
+      error: string
+      persistenceWarning?: string
+    }
+  | {
+      status: 'conflict'
+      session: StoredHomeSession
+      error: string
+    }
+  | {
+      status: 'api_unavailable'
+      session: StoredHomeSession
+      error: string
+    }
+  | {
+      status: 'invalid_home'
+      error: string
+    }
+  | {
+      status: 'error'
+      session?: StoredHomeSession
+      error: string
+    }
+
+/**
+ * Initiates payment for an individual bill share with strict idempotency handling:
+ * 1. Generates or reuses pendingIdempotencyKey on StoredShare.
+ * 2. Persists the key to storage BEFORE sending the request (aborts if persistence fails).
+ * 3. On 200 success: updates paidAt, clears key, refreshes balances, and persists.
+ * 4. On 0 / 5xx / timeout: keeps share unpaid, preserves idempotency key for retry.
+ * 5. On 409 conflict: keeps share unpaid, reports conflict without inventing a paid state.
+ */
+export async function payHouseholdShare(
+  apiClient: ApiClient,
+  currentSession: StoredHomeSession,
+  billId: string,
+  shareId: string,
+  storage?: Storage | null,
+): Promise<PayShareResult> {
+  const targetStorage = getSafeStorage(storage)
+
+  // 1. Locate bill and share
+  const billIndex = currentSession.bills.findIndex((b) => b.id === billId)
+  if (billIndex === -1) {
+    return { status: 'error', error: 'Bill not found in current session.' }
+  }
+  const bill = currentSession.bills[billIndex]
+  if (!bill) {
+    return { status: 'error', error: 'Bill not found in current session.' }
+  }
+
+  const shareIndex = bill.shares.findIndex((s) => s.id === shareId)
+  if (shareIndex === -1) {
+    return { status: 'error', error: 'Share not found on this bill.' }
+  }
+  const targetShare = bill.shares[shareIndex]
+  if (!targetShare) {
+    return { status: 'error', error: 'Share not found on this bill.' }
+  }
+
+  if (targetShare.paidAt !== null) {
+    return { status: 'error', error: 'Share has already been settled.' }
+  }
+
+  // 2. Reuse existing pendingIdempotencyKey if available, or generate a new one
+  const idempotencyKey = targetShare.pendingIdempotencyKey || crypto.randomUUID()
+
+  // 3. Prepare session with pendingIdempotencyKey attached to the share
+  const shareWithPendingKey: StoredShare = {
+    ...targetShare,
+    pendingIdempotencyKey: idempotencyKey,
+  }
+  const updatedShares = [...bill.shares]
+  updatedShares[shareIndex] = shareWithPendingKey
+  const billWithPendingKey: StoredBill = {
+    ...bill,
+    shares: updatedShares,
+  }
+  const updatedBills = [...currentSession.bills]
+  updatedBills[billIndex] = billWithPendingKey
+  const sessionWithPendingKey: StoredHomeSession = {
+    ...currentSession,
+    bills: updatedBills,
+    updatedAt: new Date().toISOString(),
+  }
+
+  // 4. PERSIST IDEMPOTENCY KEY TO STORAGE BEFORE SENDING REQUEST
+  const preSaved = saveHomeSession(sessionWithPendingKey, targetStorage)
+  if (!preSaved) {
+    return {
+      status: 'storage_error',
+      session: currentSession,
+      error:
+        'Cannot initiate payment because browser storage could not record the idempotency key.',
+      persistenceWarning:
+        'Browser storage write failed. Payment request cancelled to prevent duplicate charges.',
+    }
+  }
+
+  // 5. Send payment request to server
+  let paymentResponse: PayShareResponse
+  try {
+    paymentResponse = await apiClient.payShare(billId, shareId, idempotencyKey)
+  } catch (err: unknown) {
+    if (err instanceof ApiClientError) {
+      if (err.status === 404) {
+        clearActiveHomeId(targetStorage)
+        clearHomeSession(currentSession.home.id, targetStorage)
+        return {
+          status: 'invalid_home',
+          error: 'Bill or share not found on server (404). Household session was cleared.',
+        }
+      }
+
+      if (err.status === 409) {
+        // 409 Conflict: keep share unpaid, preserve key or report conflict
+        return {
+          status: 'conflict',
+          session: sessionWithPendingKey,
+          error: 'Payment conflict (409): This share has already been paid or processed.',
+        }
+      }
+
+      if (err.status === 0 || err.status >= 500) {
+        // Network offline or server 5xx: preserve key for retry
+        return {
+          status: 'api_unavailable',
+          session: sessionWithPendingKey,
+          error:
+            err.status === 0
+              ? 'Network connection error during payment. The payment was not confirmed. Click Pay to retry.'
+              : `Server error (${err.status}) during payment. Click Pay to retry.`,
+        }
+      }
+    }
+
+    if (err instanceof TypeError || (err instanceof Error && /network|fetch/i.test(err.message))) {
+      return {
+        status: 'api_unavailable',
+        session: sessionWithPendingKey,
+        error: 'Network connection error during payment. Click Pay to retry.',
+      }
+    }
+
+    return {
+      status: 'error',
+      session: sessionWithPendingKey,
+      error: err instanceof Error ? err.message : 'Payment failed.',
+    }
+  }
+
+  // 6. Payment Succeeded (200 OK)
+  const paidShare: StoredShare = {
+    ...targetShare,
+    paidAt: paymentResponse.paidAt,
+    pendingIdempotencyKey: null, // Clear key upon confirmed payment
+  }
+  const finalizedShares = [...bill.shares]
+  finalizedShares[shareIndex] = paidShare
+  const finalizedBill: StoredBill = {
+    ...bill,
+    shares: finalizedShares,
+  }
+  const finalizedBills = [...currentSession.bills]
+  finalizedBills[billIndex] = finalizedBill
+
+  // 7. Refresh authoritative member balances
+  let updatedBalances: MemberBalance[] | null = currentSession.cachedBalances ?? null
+  let updatedMembers: Member[] = currentSession.members
+  let refreshWarning: string | undefined
+
+  try {
+    const balancesResponse = await apiClient.getBalances(currentSession.home.id)
+    updatedBalances = balancesResponse.balances
+    updatedMembers = balancesResponse.balances.map((b) => ({
+      id: b.memberId,
+      homeId: currentSession.home.id,
+      name: b.name,
+    }))
+  } catch (_err) {
+    refreshWarning =
+      'Payment confirmed, but member balances could not be refreshed from the server.'
+  }
+
+  const updatedSession: StoredHomeSession = {
+    ...currentSession,
+    bills: finalizedBills,
+    members: updatedMembers,
+    cachedBalances: updatedBalances,
+    updatedAt: new Date().toISOString(),
+  }
+
+  // 8. Persist updated session to storage
+  const postSaved = saveHomeSession(updatedSession, targetStorage)
+  const persistenceWarning = postSaved
+    ? refreshWarning
+    : 'Payment confirmed on server, but local storage could not save your session. It may not survive a page reload until refreshed.'
+
+  return {
+    status: 'success',
+    bill: finalizedBill,
+    share: paidShare,
     session: updatedSession,
     persistenceWarning,
   }

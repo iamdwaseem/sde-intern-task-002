@@ -6,6 +6,7 @@ import {
   addHouseholdMember,
   clearActiveHomeId,
   clearHomeSession,
+  payHouseholdShare,
   persistNewHouseholdSession,
   reconcileHouseholdRoster,
   restoreHouseholdSession,
@@ -27,19 +28,25 @@ export interface HouseholdContextValue {
   homeError: string | null
   memberError: string | null
   billError: string | null
+  paymentError: string | null
+  paymentSuccess: string | null
   persistenceWarning: string | null
   pendingMember: PendingMemberCreation | null
   isSubmittingHome: boolean
   isSubmittingMember: boolean
   isSubmittingBill: boolean
+  processingShareId: string | null
   isReconciling: boolean
   createHousehold: (name: string) => Promise<boolean>
   addMember: (name: string) => Promise<boolean>
   createBill: (title: string, totalCents: number) => Promise<boolean>
+  payShare: (billId: string, shareId: string) => Promise<boolean>
   reconcileRoster: () => Promise<boolean>
   dismissRecoveryBanner: () => void
   dismissPersistenceWarning: () => void
   dismissBillError: () => void
+  dismissPaymentError: () => void
+  dismissPaymentSuccess: () => void
   resetHousehold: () => void
 }
 
@@ -52,11 +59,14 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
   const [homeError, setHomeError] = useState<string | null>(null)
   const [memberError, setMemberError] = useState<string | null>(null)
   const [billError, setBillError] = useState<string | null>(null)
+  const [paymentError, setPaymentError] = useState<string | null>(null)
+  const [paymentSuccess, setPaymentSuccess] = useState<string | null>(null)
   const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null)
   const [pendingMember, setPendingMember] = useState<PendingMemberCreation | null>(null)
   const [isSubmittingHome, setIsSubmittingHome] = useState(false)
   const [isSubmittingMember, setIsSubmittingMember] = useState(false)
   const [isSubmittingBill, setIsSubmittingBill] = useState(false)
+  const [processingShareId, setProcessingShareId] = useState<string | null>(null)
   const [isReconciling, setIsReconciling] = useState(false)
 
   // Initialize session on mount
@@ -362,6 +372,68 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
     }
   }, [session, pendingMember])
 
+  const payShare = useCallback(
+    async (billId: string, shareId: string): Promise<boolean> => {
+      if (!session) return false
+      if (processingShareId) return false
+
+      setProcessingShareId(shareId)
+      setPaymentError(null)
+      setPaymentSuccess(null)
+
+      try {
+        const result = await payHouseholdShare(apiClient, session, billId, shareId)
+        switch (result.status) {
+          case 'success':
+            setSession(result.session)
+            setStatus('ready')
+            setPaymentSuccess('Share payment recorded successfully.')
+            if (result.persistenceWarning) {
+              setPersistenceWarning(result.persistenceWarning)
+            }
+            return true
+
+          case 'storage_error':
+            setSession(result.session)
+            setPaymentError(result.error)
+            if (result.persistenceWarning) {
+              setPersistenceWarning(result.persistenceWarning)
+            }
+            return false
+
+          case 'conflict':
+            setSession(result.session)
+            setPaymentError(result.error)
+            return false
+
+          case 'api_unavailable':
+            setSession(result.session)
+            setPaymentError(result.error)
+            return false
+
+          case 'invalid_home':
+            setSession(null)
+            setStatus('invalid_home')
+            setError(result.error)
+            return false
+
+          case 'error':
+            if ('session' in result && result.session) {
+              setSession(result.session)
+            }
+            setPaymentError(result.error)
+            return false
+        }
+      } catch (err: unknown) {
+        setPaymentError(err instanceof Error ? err.message : 'Payment failed.')
+        return false
+      } finally {
+        setProcessingShareId(null)
+      }
+    },
+    [session, processingShareId],
+  )
+
   const dismissRecoveryBanner = useCallback(() => {
     setError(null)
   }, [])
@@ -372,6 +444,14 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
 
   const dismissBillError = useCallback(() => {
     setBillError(null)
+  }, [])
+
+  const dismissPaymentError = useCallback(() => {
+    setPaymentError(null)
+  }, [])
+
+  const dismissPaymentSuccess = useCallback(() => {
+    setPaymentSuccess(null)
   }, [])
 
   const resetHousehold = useCallback(() => {
@@ -385,6 +465,9 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
     setHomeError(null)
     setMemberError(null)
     setBillError(null)
+    setPaymentError(null)
+    setPaymentSuccess(null)
+    setProcessingShareId(null)
     setPendingMember(null)
     setPersistenceWarning(null)
   }, [session])
@@ -398,19 +481,25 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
         homeError,
         memberError,
         billError,
+        paymentError,
+        paymentSuccess,
         persistenceWarning,
         pendingMember,
         isSubmittingHome,
         isSubmittingMember,
         isSubmittingBill,
+        processingShareId,
         isReconciling,
         createHousehold,
         addMember,
         createBill,
+        payShare,
         reconcileRoster,
         dismissRecoveryBanner,
         dismissPersistenceWarning,
         dismissBillError,
+        dismissPaymentError,
+        dismissPaymentSuccess,
         resetHousehold,
       }}
     >
