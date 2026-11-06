@@ -3,6 +3,7 @@ import { ApiClientError } from '../api/client.ts'
 import {
   ACTIVE_HOME_STORAGE_KEY,
   type BalancesResponse,
+  type CreateBillResponse,
   getHomeStorageKey,
   HOME_SESSION_STORAGE_VERSION,
   type Home,
@@ -10,6 +11,7 @@ import {
   type MemberBalance,
   type PendingMemberCreation,
   type SessionRecoveryResult,
+  type Share,
   type StoredBill,
   type StoredHomeSession,
   type StoredShare,
@@ -796,5 +798,171 @@ export async function reconcileHouseholdRoster(
       session: currentSession,
       error: err instanceof Error ? err.message : 'Balance reconciliation could not be verified',
     }
+  }
+}
+
+/* ==========================================================================
+   Bill Persistence, Metrics & History
+   ========================================================================== */
+
+export interface BillMetrics {
+  totalIncurredCents: number
+  settledCents: number
+  pendingCents: number
+}
+
+/**
+ * Calculates total incurred, settled, and pending amounts from real bill data.
+ * Guarantees totalIncurredCents === settledCents + pendingCents.
+ */
+export function calculateBillMetrics(bills: readonly StoredBill[]): BillMetrics {
+  let totalIncurredCents = 0
+  let settledCents = 0
+  let pendingCents = 0
+
+  if (!Array.isArray(bills)) {
+    return { totalIncurredCents: 0, settledCents: 0, pendingCents: 0 }
+  }
+
+  for (const bill of bills) {
+    if (typeof bill.totalCents === 'number' && Number.isSafeInteger(bill.totalCents)) {
+      totalIncurredCents += bill.totalCents
+    }
+    if (Array.isArray(bill.shares)) {
+      for (const share of bill.shares) {
+        if (typeof share.amountCents === 'number' && Number.isSafeInteger(share.amountCents)) {
+          if (share.paidAt !== null) {
+            settledCents += share.amountCents
+          } else {
+            pendingCents += share.amountCents
+          }
+        }
+      }
+    }
+  }
+
+  return {
+    totalIncurredCents,
+    settledCents,
+    pendingCents,
+  }
+}
+
+/**
+ * Formats an ISO timestamp for bill history display (e.g., "Recorded Nov 6, 2026").
+ */
+export function formatBillDate(isoDateString: string): string {
+  try {
+    const d = new Date(isoDateString)
+    if (Number.isNaN(d.getTime())) return 'Recorded recently'
+    const formatted = d.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    })
+    return `Recorded ${formatted}`
+  } catch {
+    return 'Recorded recently'
+  }
+}
+
+export interface AddBillResult {
+  status: 'success' | 'api_unavailable' | 'stale' | 'invalid_home' | 'error'
+  bill?: StoredBill
+  session?: StoredHomeSession
+  error?: string
+  persistenceWarning?: string
+}
+
+/**
+ * Creates a bill on the server, appends it to session.bills, refreshes authoritative balances,
+ * and persists the updated session to storage with failure observability.
+ */
+export async function addHouseholdBill(
+  apiClient: ApiClient,
+  currentSession: StoredHomeSession,
+  title: string,
+  totalCents: number,
+  storage?: Storage | null,
+): Promise<AddBillResult> {
+  const targetStorage = getSafeStorage(storage)
+  const trimmedTitle = title.trim()
+
+  let createdBill: CreateBillResponse
+  try {
+    createdBill = await apiClient.createBill(currentSession.home.id, trimmedTitle, totalCents)
+  } catch (err: unknown) {
+    if (err instanceof ApiClientError && err.status === 404) {
+      clearActiveHomeId(targetStorage)
+      clearHomeSession(currentSession.home.id, targetStorage)
+      return {
+        status: 'invalid_home',
+        error: 'Household not found on server. It may have been deleted or database was reset.',
+      }
+    }
+    return {
+      status: 'error',
+      error: err instanceof Error ? err.message : 'Failed to create bill on server.',
+    }
+  }
+
+  const storedBill: StoredBill = {
+    id: createdBill.id,
+    homeId: createdBill.homeId,
+    title: createdBill.title,
+    totalCents: createdBill.totalCents,
+    shares: createdBill.shares.map((s: Share) => ({
+      id: s.id,
+      memberId: s.memberId,
+      amountCents: s.amountCents,
+      paidAt: s.paidAt,
+      pendingIdempotencyKey: null,
+    })),
+    clientCreatedAt: new Date().toISOString(),
+  }
+
+  // Refresh authoritative balances so member balances reflect the newly incurred bill
+  let updatedMembers: Member[] = currentSession.members
+  let updatedBalances: MemberBalance[] | null = currentSession.cachedBalances ?? null
+  let refreshWarning: string | undefined
+
+  try {
+    const balancesResponse = await apiClient.getBalances(currentSession.home.id)
+    updatedMembers = balancesResponse.balances.map((b) => ({
+      id: b.memberId,
+      homeId: currentSession.home.id,
+      name: b.name,
+    }))
+    updatedBalances = balancesResponse.balances
+  } catch (err) {
+    if (err instanceof ApiClientError && err.status === 404) {
+      clearActiveHomeId(targetStorage)
+      clearHomeSession(currentSession.home.id, targetStorage)
+      return {
+        status: 'invalid_home',
+        error: 'Household not found on server. It may have been deleted or database was reset.',
+      }
+    }
+    refreshWarning = 'Bill recorded, but balances could not be refreshed from the server.'
+  }
+
+  const updatedSession: StoredHomeSession = {
+    ...currentSession,
+    bills: [...currentSession.bills, storedBill],
+    members: updatedMembers,
+    cachedBalances: updatedBalances,
+    updatedAt: new Date().toISOString(),
+  }
+
+  const saved = saveHomeSession(updatedSession, targetStorage)
+  const persistenceWarning = saved
+    ? refreshWarning
+    : 'Bill recorded on server, but local storage could not save your session. This bill may not survive a page reload.'
+
+  return {
+    status: 'success',
+    bill: storedBill,
+    session: updatedSession,
+    persistenceWarning,
   }
 }

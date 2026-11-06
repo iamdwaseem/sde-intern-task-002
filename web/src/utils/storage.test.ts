@@ -4,6 +4,7 @@ import { ApiClient } from '../api/client.ts'
 import type { BalancesResponse, StoredHomeSession } from '../api/types.ts'
 import { ACTIVE_HOME_STORAGE_KEY, getHomeStorageKey } from '../api/types.ts'
 import {
+  addHouseholdBill,
   addHouseholdMember,
   clearActiveHomeId,
   clearHomeSession,
@@ -1522,6 +1523,254 @@ describe('reconcileHouseholdRoster Workflow', () => {
       const finalSavedSession = loadHomeSession('h-reload', storage)
       assert.strictEqual(finalSavedSession?.pendingMemberCreation, null)
       assert.strictEqual(finalSavedSession?.members.length, 2)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+})
+
+describe('addHouseholdBill Workflow & History Persistence', () => {
+  it('saves successfully created bill into session.bills and persists to storage', async () => {
+    const session: StoredHomeSession = {
+      version: 1,
+      home: { id: 'h-bills', name: 'Bill Test House' },
+      members: [{ id: 'm-1', homeId: 'h-bills', name: 'Julian' }],
+      bills: [],
+      cachedBalances: [{ memberId: 'm-1', name: 'Julian', outstandingCents: 0 }],
+      pendingMemberCreation: null,
+      updatedAt: new Date().toISOString(),
+    }
+    const storage = createMockStorage({
+      [ACTIVE_HOME_STORAGE_KEY]: 'h-bills',
+      [getHomeStorageKey('h-bills')]: JSON.stringify(session),
+    })
+
+    const originalFetch = globalThis.fetch
+    try {
+      globalThis.fetch = async (input, init) => {
+        const url = String(input)
+        if (init?.method === 'POST') {
+          return new Response(
+            JSON.stringify({
+              id: 'b-101',
+              homeId: 'h-bills',
+              title: 'Whole Foods Market',
+              totalCents: 6000,
+              shares: [{ id: 's-101', memberId: 'm-1', amountCents: 6000, paidAt: null }],
+            }),
+            { status: 201, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        if (url.includes('/balances')) {
+          return new Response(
+            JSON.stringify({
+              balances: [{ memberId: 'm-1', name: 'Julian', outstandingCents: 6000 }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        return new Response('Not found', { status: 404 })
+      }
+
+      const client = new ApiClient()
+      const result = await addHouseholdBill(client, session, 'Whole Foods Market', 6000, storage)
+
+      assert.strictEqual(result.status, 'success')
+      assert.ok(result.session)
+      assert.strictEqual(result.session.bills.length, 1)
+      assert.strictEqual(result.session.bills[0]?.id, 'b-101')
+      assert.strictEqual(result.session.bills[0]?.title, 'Whole Foods Market')
+      assert.strictEqual(result.session.bills[0]?.totalCents, 6000)
+      assert.strictEqual(typeof result.session.bills[0]?.clientCreatedAt, 'string')
+      assert.strictEqual(result.session.bills[0]?.shares.length, 1)
+      assert.strictEqual(result.session.bills[0]?.shares[0]?.paidAt, null)
+
+      // Balances refreshed
+      assert.strictEqual(result.session.cachedBalances?.[0]?.outstandingCents, 6000)
+
+      // Persisted to storage
+      const savedSession = loadHomeSession('h-bills', storage)
+      assert.notStrictEqual(savedSession, null)
+      assert.strictEqual(savedSession?.bills.length, 1)
+      assert.strictEqual(savedSession?.bills[0]?.title, 'Whole Foods Market')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('preserves bill history across browser reload via restoreHouseholdSession', async () => {
+    const sessionWithBills: StoredHomeSession = {
+      version: 1,
+      home: { id: 'h-reload-bills', name: 'History House' },
+      members: [
+        { id: 'm-1', homeId: 'h-reload-bills', name: 'Julian' },
+        { id: 'm-2', homeId: 'h-reload-bills', name: 'Elena' },
+      ],
+      bills: [
+        {
+          id: 'b-past',
+          homeId: 'h-reload-bills',
+          title: 'Con Edison Electricity',
+          totalCents: 12000,
+          clientCreatedAt: '2026-11-01T10:00:00Z',
+          shares: [
+            { id: 's-1', memberId: 'm-1', amountCents: 6000, paidAt: '2026-11-02T10:00:00Z' },
+            { id: 's-2', memberId: 'm-2', amountCents: 6000, paidAt: null },
+          ],
+        },
+      ],
+      cachedBalances: [
+        { memberId: 'm-1', name: 'Julian', outstandingCents: 0 },
+        { memberId: 'm-2', name: 'Elena', outstandingCents: 6000 },
+      ],
+      pendingMemberCreation: null,
+      updatedAt: '2026-11-02T10:00:00Z',
+    }
+
+    const storage = createMockStorage({
+      [ACTIVE_HOME_STORAGE_KEY]: 'h-reload-bills',
+      [getHomeStorageKey('h-reload-bills')]: JSON.stringify(sessionWithBills),
+    })
+
+    const originalFetch = globalThis.fetch
+    try {
+      globalThis.fetch = async () =>
+        new Response(
+          JSON.stringify({
+            balances: [
+              { memberId: 'm-1', name: 'Julian', outstandingCents: 0 },
+              { memberId: 'm-2', name: 'Elena', outstandingCents: 6000 },
+            ],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+
+      const client = new ApiClient()
+      const reloadResult = await restoreHouseholdSession(client, storage)
+
+      assert.strictEqual(reloadResult.status, 'ready')
+      assert.ok(reloadResult.session)
+      // Bill history successfully preserved across reload!
+      assert.strictEqual(reloadResult.session.bills.length, 1)
+      assert.strictEqual(reloadResult.session.bills[0]?.title, 'Con Edison Electricity')
+      assert.strictEqual(reloadResult.session.bills[0]?.totalCents, 12000)
+      assert.strictEqual(reloadResult.session.bills[0]?.shares.length, 2)
+      assert.strictEqual(reloadResult.session.bills[0]?.shares[0]?.paidAt, '2026-11-02T10:00:00Z')
+      assert.strictEqual(reloadResult.session.bills[0]?.shares[1]?.paidAt, null)
+
+      // Storage preserved with bill history
+      const savedInStorage = loadHomeSession('h-reload-bills', storage)
+      assert.strictEqual(savedInStorage?.bills.length, 1)
+      assert.strictEqual(savedInStorage?.bills[0]?.title, 'Con Edison Electricity')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('retains bill in memory and surfaces persistenceWarning when localStorage fails', async () => {
+    const session: StoredHomeSession = {
+      version: 1,
+      home: { id: 'h-failing', name: 'Failing Storage Home' },
+      members: [{ id: 'm-1', homeId: 'h-failing', name: 'Julian' }],
+      bills: [],
+      cachedBalances: [{ memberId: 'm-1', name: 'Julian', outstandingCents: 0 }],
+      pendingMemberCreation: null,
+      updatedAt: new Date().toISOString(),
+    }
+
+    const failingStorage: Storage = {
+      get length() {
+        return 1
+      },
+      clear() {},
+      getItem(key: string) {
+        if (key === ACTIVE_HOME_STORAGE_KEY) return 'h-failing'
+        if (key === getHomeStorageKey('h-failing')) return JSON.stringify(session)
+        return null
+      },
+      key() {
+        return null
+      },
+      removeItem() {},
+      setItem() {
+        throw new DOMException('QuotaExceededError', 'QuotaExceededError')
+      },
+    }
+
+    const originalFetch = globalThis.fetch
+    try {
+      globalThis.fetch = async (_input, init) => {
+        if (init?.method === 'POST') {
+          return new Response(
+            JSON.stringify({
+              id: 'b-mem-only',
+              homeId: 'h-failing',
+              title: 'Internet Service',
+              totalCents: 5000,
+              shares: [{ id: 's-1', memberId: 'm-1', amountCents: 5000, paidAt: null }],
+            }),
+            { status: 201, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        return new Response(
+          JSON.stringify({
+            balances: [{ memberId: 'm-1', name: 'Julian', outstandingCents: 5000 }],
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
+      const client = new ApiClient()
+      const result = await addHouseholdBill(
+        client,
+        session,
+        'Internet Service',
+        5000,
+        failingStorage,
+      )
+
+      assert.strictEqual(result.status, 'success')
+      assert.ok(result.session)
+      // Bill is preserved in memory despite storage failure!
+      assert.strictEqual(result.session.bills.length, 1)
+      assert.strictEqual(result.session.bills[0]?.title, 'Internet Service')
+      // Observable persistence warning is surfaced
+      assert.ok(result.persistenceWarning)
+      assert.match(result.persistenceWarning ?? '', /local storage could not save/i)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('returns invalid_home and cleans storage when server returns 404 on createBill', async () => {
+    const session: StoredHomeSession = {
+      version: 1,
+      home: { id: 'h-deleted', name: 'Deleted House' },
+      members: [{ id: 'm-1', homeId: 'h-deleted', name: 'Julian' }],
+      bills: [],
+      cachedBalances: [],
+      pendingMemberCreation: null,
+      updatedAt: new Date().toISOString(),
+    }
+    const storage = createMockStorage({
+      [ACTIVE_HOME_STORAGE_KEY]: 'h-deleted',
+      [getHomeStorageKey('h-deleted')]: JSON.stringify(session),
+    })
+
+    const originalFetch = globalThis.fetch
+    try {
+      globalThis.fetch = async () =>
+        new Response(JSON.stringify({ error: 'Home not found' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        })
+
+      const client = new ApiClient()
+      const result = await addHouseholdBill(client, session, 'Ghost Expense', 3000, storage)
+
+      assert.strictEqual(result.status, 'invalid_home')
+      assert.strictEqual(loadActiveHomeId(storage), null)
+      assert.strictEqual(loadHomeSession('h-deleted', storage), null)
     } finally {
       globalThis.fetch = originalFetch
     }

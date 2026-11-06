@@ -2,6 +2,7 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useS
 import { apiClient } from '../api/client.ts'
 import type { Home, PendingMemberCreation, StoredHomeSession } from '../api/types.ts'
 import {
+  addHouseholdBill,
   addHouseholdMember,
   clearActiveHomeId,
   clearHomeSession,
@@ -25,16 +26,20 @@ export interface HouseholdContextValue {
   error: string | null
   homeError: string | null
   memberError: string | null
+  billError: string | null
   persistenceWarning: string | null
   pendingMember: PendingMemberCreation | null
   isSubmittingHome: boolean
   isSubmittingMember: boolean
+  isSubmittingBill: boolean
   isReconciling: boolean
   createHousehold: (name: string) => Promise<boolean>
   addMember: (name: string) => Promise<boolean>
+  createBill: (title: string, totalCents: number) => Promise<boolean>
   reconcileRoster: () => Promise<boolean>
   dismissRecoveryBanner: () => void
   dismissPersistenceWarning: () => void
+  dismissBillError: () => void
   resetHousehold: () => void
 }
 
@@ -46,10 +51,12 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null)
   const [homeError, setHomeError] = useState<string | null>(null)
   const [memberError, setMemberError] = useState<string | null>(null)
+  const [billError, setBillError] = useState<string | null>(null)
   const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null)
   const [pendingMember, setPendingMember] = useState<PendingMemberCreation | null>(null)
   const [isSubmittingHome, setIsSubmittingHome] = useState(false)
   const [isSubmittingMember, setIsSubmittingMember] = useState(false)
+  const [isSubmittingBill, setIsSubmittingBill] = useState(false)
   const [isReconciling, setIsReconciling] = useState(false)
 
   // Initialize session on mount
@@ -257,6 +264,56 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
     [session, isSubmittingMember],
   )
 
+  const createBill = useCallback(
+    async (title: string, totalCents: number): Promise<boolean> => {
+      if (!session) return false
+      setIsSubmittingBill(true)
+      setBillError(null)
+
+      try {
+        const result = await addHouseholdBill(apiClient, session, title, totalCents)
+        switch (result.status) {
+          case 'success':
+            if (result.session) {
+              setSession(result.session)
+            }
+            if (result.persistenceWarning) {
+              setPersistenceWarning(result.persistenceWarning)
+            }
+            return true
+
+          case 'invalid_home':
+            setSession(null)
+            setStatus('invalid_home')
+            setError(result.error ?? null)
+            setPendingMember(null)
+            setMemberError(null)
+            return false
+
+          case 'api_unavailable':
+            setStatus('api_unavailable')
+            setError(result.error ?? null)
+            return false
+
+          case 'stale':
+            setStatus('stale')
+            setError(result.error ?? null)
+            return false
+
+          case 'error':
+            setBillError(result.error ?? 'Failed to record bill')
+            return false
+        }
+      } catch (err: unknown) {
+        setBillError(err instanceof Error ? err.message : 'Failed to record bill')
+        return false
+      } finally {
+        setIsSubmittingBill(false)
+      }
+    },
+    [session],
+  )
+
   const reconcileRoster = useCallback(async (): Promise<boolean> => {
     if (!session) return false
     setIsReconciling(true)
@@ -313,6 +370,10 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
     setPersistenceWarning(null)
   }, [])
 
+  const dismissBillError = useCallback(() => {
+    setBillError(null)
+  }, [])
+
   const resetHousehold = useCallback(() => {
     if (session?.home.id) {
       clearHomeSession(session.home.id)
@@ -323,6 +384,7 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
     setError(null)
     setHomeError(null)
     setMemberError(null)
+    setBillError(null)
     setPendingMember(null)
     setPersistenceWarning(null)
   }, [session])
@@ -335,16 +397,20 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
         error,
         homeError,
         memberError,
+        billError,
         persistenceWarning,
         pendingMember,
         isSubmittingHome,
         isSubmittingMember,
+        isSubmittingBill,
         isReconciling,
         createHousehold,
         addMember,
+        createBill,
         reconcileRoster,
         dismissRecoveryBanner,
         dismissPersistenceWarning,
+        dismissBillError,
         resetHousehold,
       }}
     >

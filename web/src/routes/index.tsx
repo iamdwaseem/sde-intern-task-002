@@ -1,9 +1,9 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
-import { apiClient } from '../api/client.ts'
 import { BillComposer } from '../components/BillComposer.tsx'
 import { useHousehold } from '../context/HouseholdContext.tsx'
 import { formatCents } from '../utils/money.ts'
+import { calculateBillMetrics, formatBillDate } from '../utils/storage.ts'
 
 export const Route = createFileRoute('/')({
   component: HouseholdLedgerView,
@@ -27,24 +27,26 @@ function HouseholdLedgerView() {
     error,
     homeError,
     memberError,
+    billError,
     persistenceWarning,
     pendingMember,
     isSubmittingHome,
     isSubmittingMember,
+    isSubmittingBill,
     isReconciling,
     createHousehold,
     addMember,
+    createBill,
     reconcileRoster,
     dismissRecoveryBanner,
     dismissPersistenceWarning,
+    dismissBillError,
   } = useHousehold()
 
   const [homeNameInput, setHomeNameInput] = useState('')
   const [memberNameInput, setMemberNameInput] = useState('')
-  const [isComposerOpen, setIsComposerOpen] = useState(true)
-  const [billError, setBillError] = useState<string | null>(null)
+  const [isComposerOpen, setIsComposerOpen] = useState(false)
   const [billSuccess, setBillSuccess] = useState<string | null>(null)
-  const [isSubmittingBill, setIsSubmittingBill] = useState(false)
 
   // 1. Initial restoration loading state
   if (status === 'loading') {
@@ -198,19 +200,14 @@ function HouseholdLedgerView() {
   const isOffline = status === 'api_unavailable'
   const isStale = status === 'stale'
 
+  const metrics = calculateBillMetrics(session.bills)
+
   const handleRecordBill = async ({ title, totalCents }: { title: string; totalCents: number }) => {
-    if (!session) return
-    setIsSubmittingBill(true)
-    setBillError(null)
     setBillSuccess(null)
-    try {
-      await apiClient.createBill(session.home.id, title, totalCents)
+    const ok = await createBill(title, totalCents)
+    if (ok) {
       setBillSuccess(`Recorded "${title}" (${formatCents(totalCents)}). Shares allocated.`)
-      await reconcileRoster()
-    } catch (err: unknown) {
-      setBillError(err instanceof Error ? err.message : 'Failed to record bill.')
-    } finally {
-      setIsSubmittingBill(false)
+      setIsComposerOpen(false)
     }
   }
 
@@ -362,60 +359,134 @@ function HouseholdLedgerView() {
             <h2 id="bills-heading" className="ledger-surface-title">
               Shared Bills & Expenditures
             </h2>
-            <span className="ledger-surface-meta">0 recorded entries</span>
+            <span className="ledger-surface-meta">
+              {session.bills.length} recorded {session.bills.length === 1 ? 'entry' : 'entries'}
+            </span>
           </div>
 
           {/* Quick Metrics Strip */}
           <div className="stats-strip">
             <div className="stat-cell">
               <div className="stat-label">Total Incurred</div>
-              <div className="stat-figure tabular-numbers">$0.00</div>
+              <div className="stat-figure tabular-numbers">
+                {formatCents(metrics.totalIncurredCents)}
+              </div>
             </div>
             <div className="stat-cell">
               <div className="stat-label">Settled to Date</div>
-              <div className="stat-figure tabular-numbers">$0.00</div>
+              <div className="stat-figure tabular-numbers">{formatCents(metrics.settledCents)}</div>
             </div>
             <div className="stat-cell">
               <div className="stat-label">Pending Collection</div>
-              <div className="stat-figure tabular-numbers">$0.00</div>
+              <div className="stat-figure tabular-numbers">{formatCents(metrics.pendingCents)}</div>
             </div>
           </div>
 
-          {/* Authentic Empty Bill Ledger State */}
-          <div className="empty-ledger-state">
-            <div className="empty-ledger-icon" aria-hidden="true">
-              <svg
-                aria-hidden="true"
-                width="24"
-                height="24"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.75"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              >
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-                <line x1="16" y1="13" x2="8" y2="13" />
-                <line x1="16" y1="17" x2="8" y2="17" />
-                <line x1="10" y1="9" x2="8" y2="9" />
-              </svg>
+          {/* Actual Bills Ledger Table or Authentic Empty State */}
+          {session.bills.length > 0 ? (
+            <table className="ledger-table" aria-label="Shared bills and expenditures">
+              <thead>
+                <tr>
+                  <th scope="col">Expenditure / Bill</th>
+                  <th scope="col" className="bill-allocation-desktop">
+                    Allocation
+                  </th>
+                  <th scope="col">Amount</th>
+                  <th scope="col">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {session.bills.map((bill) => {
+                  const pendingSharesCount = bill.shares.filter((s) => s.paidAt === null).length
+                  const isFullySettled = pendingSharesCount === 0
+
+                  let allocationText = `${bill.shares.length} shares`
+                  if (bill.shares.length > 0) {
+                    const firstAmount = bill.shares[0]?.amountCents
+                    const allEqual = bill.shares.every((s) => s.amountCents === firstAmount)
+                    if (allEqual && firstAmount !== undefined) {
+                      allocationText = `${bill.shares.length} × ${formatCents(firstAmount)}`
+                    } else {
+                      const amounts = bill.shares.map((s) => s.amountCents)
+                      const minAmount = Math.min(...amounts)
+                      const maxAmount = Math.max(...amounts)
+                      allocationText = `${bill.shares.length} shares (${formatCents(minAmount)}–${formatCents(maxAmount)})`
+                    }
+                  }
+
+                  return (
+                    <tr key={bill.id}>
+                      <td>
+                        <div className="bill-item">
+                          <span className="bill-title">{bill.title}</span>
+                          <div className="bill-submeta">
+                            <span className="bill-date">
+                              {formatBillDate(bill.clientCreatedAt)}
+                            </span>
+                            <span className="bill-allocation-mobile tabular-numbers">
+                              • {allocationText}
+                            </span>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="bill-allocation-desktop">
+                        <span className="tabular-numbers">{allocationText}</span>
+                      </td>
+                      <td>
+                        <span className="bill-amount tabular-numbers">
+                          {formatCents(bill.totalCents)}
+                        </span>
+                      </td>
+                      <td>
+                        {isFullySettled ? (
+                          <span className="badge badge-settled">Settled</span>
+                        ) : (
+                          <span className="badge badge-unsettled">
+                            {pendingSharesCount} Pending
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <div className="empty-ledger-state">
+              <div className="empty-ledger-icon" aria-hidden="true">
+                <svg
+                  aria-hidden="true"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                  <line x1="16" y1="13" x2="8" y2="13" />
+                  <line x1="16" y1="17" x2="8" y2="17" />
+                  <line x1="10" y1="9" x2="8" y2="9" />
+                </svg>
+              </div>
+              <h3 className="empty-ledger-title">No Shared Bills Recorded Yet</h3>
+              <p className="empty-ledger-description">
+                When bills are incurred, record them here. Each expense will divide equally among
+                active residents with remainder pennies distributed sequentially.
+              </p>
+              <div className="empty-ledger-hint">
+                <span className="badge badge-settled">Ready for Expenses</span>
+                <span>
+                  {session.members.length === 0
+                    ? 'Add household residents on the right before recording bills.'
+                    : `${session.members.length} resident${session.members.length === 1 ? '' : 's'} enrolled in the allocation roster.`}
+                </span>
+              </div>
             </div>
-            <h3 className="empty-ledger-title">No Shared Bills Recorded Yet</h3>
-            <p className="empty-ledger-description">
-              When bills are incurred, record them here. Each expense will divide equally among
-              active residents with remainder pennies distributed sequentially.
-            </p>
-            <div className="empty-ledger-hint">
-              <span className="badge badge-settled">Ready for Expenses</span>
-              <span>
-                {session.members.length === 0
-                  ? 'Add household residents on the right before recording bills.'
-                  : `${session.members.length} resident${session.members.length === 1 ? '' : 's'} enrolled in the allocation roster.`}
-              </span>
-            </div>
-          </div>
+          )}
 
           {/* Bill Feedback Notifications */}
           {billError && (
@@ -428,10 +499,21 @@ function HouseholdLedgerView() {
                 borderRadius: 'var(--radius-sm)',
                 fontSize: '0.8125rem',
                 color: '#732314',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
               }}
               role="alert"
             >
-              {billError}
+              <span>{billError}</span>
+              <button
+                type="button"
+                className="banner-dismiss-btn"
+                onClick={dismissBillError}
+                style={{ marginLeft: 'var(--space-3)', color: 'inherit' }}
+              >
+                Dismiss
+              </button>
             </div>
           )}
 
@@ -445,10 +527,21 @@ function HouseholdLedgerView() {
                 borderRadius: 'var(--radius-sm)',
                 fontSize: '0.8125rem',
                 color: 'var(--color-secondary)',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
               }}
               role="status"
             >
-              {billSuccess}
+              <span>{billSuccess}</span>
+              <button
+                type="button"
+                className="banner-dismiss-btn"
+                onClick={() => setBillSuccess(null)}
+                style={{ marginLeft: 'var(--space-3)', color: 'inherit' }}
+              >
+                Dismiss
+              </button>
             </div>
           )}
 

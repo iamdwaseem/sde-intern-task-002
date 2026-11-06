@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import type { Member } from '../api/types.ts'
+import type { Member, StoredBill } from '../api/types.ts'
 import { computeLiveSplitPreview, validateBillInput } from './bill-composer.ts'
+import { calculateBillMetrics, formatBillDate } from './storage.ts'
 
 describe('Bill Composer Validation: validateBillInput', () => {
   it('rejects empty or whitespace-only title', () => {
@@ -206,5 +207,75 @@ describe('Live Split Preview Computation: computeLiveSplitPreview', () => {
     assert.strictEqual(result.shares[0]?.amountCents, 4567)
     assert.strictEqual(result.shares[0]?.formattedAmount, '$45.67')
     assert.strictEqual(result.shares[0]?.isRemainderRecipient, false)
+  })
+})
+
+describe('Bill Metrics & Dates: calculateBillMetrics & formatBillDate', () => {
+  it('returns zeros for empty bills array', () => {
+    const metrics = calculateBillMetrics([])
+    assert.deepStrictEqual(metrics, {
+      totalIncurredCents: 0,
+      settledCents: 0,
+      pendingCents: 0,
+    })
+  })
+
+  it('calculates totals from multiple bills with pending and settled shares', () => {
+    const sampleBills: StoredBill[] = [
+      {
+        id: 'b-1',
+        homeId: 'h-1',
+        title: 'Electricity',
+        totalCents: 18000, // $180.00
+        clientCreatedAt: '2026-11-01T12:00:00Z',
+        shares: [
+          { id: 's-1', memberId: 'm-1', amountCents: 6000, paidAt: '2026-11-02T10:00:00Z' }, // settled
+          { id: 's-2', memberId: 'm-2', amountCents: 6000, paidAt: '2026-11-02T11:00:00Z' }, // settled
+          { id: 's-3', memberId: 'm-3', amountCents: 6000, paidAt: null }, // pending
+        ],
+      },
+      {
+        id: 'b-2',
+        homeId: 'h-1',
+        title: 'Groceries',
+        totalCents: 21000, // $210.00
+        clientCreatedAt: '2026-11-03T12:00:00Z',
+        shares: [
+          { id: 's-4', memberId: 'm-1', amountCents: 7000, paidAt: '2026-11-04T10:00:00Z' }, // settled
+          { id: 's-5', memberId: 'm-2', amountCents: 7000, paidAt: null }, // pending
+          { id: 's-6', memberId: 'm-3', amountCents: 7000, paidAt: '2026-11-04T12:00:00Z' }, // settled
+        ],
+      },
+      {
+        id: 'b-3',
+        homeId: 'h-1',
+        title: 'Internet',
+        totalCents: 7500, // $75.00
+        clientCreatedAt: '2026-11-05T12:00:00Z',
+        shares: [
+          { id: 's-7', memberId: 'm-1', amountCents: 2500, paidAt: null }, // pending
+          { id: 's-8', memberId: 'm-2', amountCents: 2500, paidAt: null }, // pending
+          { id: 's-9', memberId: 'm-3', amountCents: 2500, paidAt: null }, // pending
+        ],
+      },
+    ]
+
+    const metrics = calculateBillMetrics(sampleBills)
+    // Total Incurred = 18000 + 21000 + 7500 = 46500 ($465.00)
+    assert.strictEqual(metrics.totalIncurredCents, 46500)
+
+    // Settled = 6000 + 6000 + 7000 + 7000 = 26000 ($260.00)
+    assert.strictEqual(metrics.settledCents, 26000)
+
+    // Pending = 6000 + 7000 + 2500 + 2500 + 2500 = 20500 ($205.00)
+    assert.strictEqual(metrics.pendingCents, 20500)
+
+    // Incurred === Settled + Pending guarantee
+    assert.strictEqual(metrics.totalIncurredCents, metrics.settledCents + metrics.pendingCents)
+  })
+
+  it('formats dates consistently', () => {
+    assert.strictEqual(formatBillDate('2026-11-05T12:00:00.000Z'), 'Recorded Nov 5, 2026')
+    assert.strictEqual(formatBillDate('invalid-date'), 'Recorded recently')
   })
 })
