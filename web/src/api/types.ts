@@ -103,6 +103,7 @@ export interface StoredHomeSession {
   members: Member[]
   bills: StoredBill[]
   cachedBalances?: MemberBalance[] | null
+  pendingMemberCreation?: PendingMemberCreation | null
   updatedAt: string
 }
 
@@ -129,6 +130,7 @@ export type SessionRecoveryStatus =
   | 'corrupted'
   | 'invalid_home'
   | 'api_unavailable'
+  | 'stale'
   | 'ready'
 
 export interface SessionRecoveryResult {
@@ -136,4 +138,10 @@ export interface SessionRecoveryResult {
   homeId?: string | null
   session?: StoredHomeSession | null
   error?: string | null
+  persistenceWarning?: string | null
+}
+
+export interface PendingMemberCreation {
+  name: string
+  baselineMemberIds: string[]
 }

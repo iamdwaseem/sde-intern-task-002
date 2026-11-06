@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/utils/money.test.ts src/api/client.test.ts",
+    "test": "node --test src/utils/money.test.ts src/api/client.test.ts src/utils/storage.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
