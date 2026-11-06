@@ -1,5 +1,7 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useState } from 'react'
+import { apiClient } from '../api/client.ts'
+import { BillComposer } from '../components/BillComposer.tsx'
 import { useHousehold } from '../context/HouseholdContext.tsx'
 import { formatCents } from '../utils/money.ts'
 
@@ -39,6 +41,10 @@ function HouseholdLedgerView() {
 
   const [homeNameInput, setHomeNameInput] = useState('')
   const [memberNameInput, setMemberNameInput] = useState('')
+  const [isComposerOpen, setIsComposerOpen] = useState(true)
+  const [billError, setBillError] = useState<string | null>(null)
+  const [billSuccess, setBillSuccess] = useState<string | null>(null)
+  const [isSubmittingBill, setIsSubmittingBill] = useState(false)
 
   // 1. Initial restoration loading state
   if (status === 'loading') {
@@ -191,6 +197,22 @@ function HouseholdLedgerView() {
 
   const isOffline = status === 'api_unavailable'
   const isStale = status === 'stale'
+
+  const handleRecordBill = async ({ title, totalCents }: { title: string; totalCents: number }) => {
+    if (!session) return
+    setIsSubmittingBill(true)
+    setBillError(null)
+    setBillSuccess(null)
+    try {
+      await apiClient.createBill(session.home.id, title, totalCents)
+      setBillSuccess(`Recorded "${title}" (${formatCents(totalCents)}). Shares allocated.`)
+      await reconcileRoster()
+    } catch (err: unknown) {
+      setBillError(err instanceof Error ? err.message : 'Failed to record bill.')
+    } finally {
+      setIsSubmittingBill(false)
+    }
+  }
 
   const handleAddMember = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -395,25 +417,63 @@ function HouseholdLedgerView() {
             </div>
           </div>
 
-          {/* Action Row */}
-          <div
-            style={{
-              padding: 'var(--space-4) var(--space-6)',
-              borderTop: '1px solid var(--color-border-subtle)',
-              display: 'flex',
-              justifyContent: 'flex-end',
-            }}
-          >
-            <button
-              type="button"
-              className="btn-action"
-              title="Bill creation will be available in the upcoming step"
-              disabled
-              style={{ opacity: 0.65, cursor: 'not-allowed' }}
+          {/* Bill Feedback Notifications */}
+          {billError && (
+            <div
+              style={{
+                margin: 'var(--space-4) var(--space-6) 0',
+                padding: 'var(--space-3) var(--space-4)',
+                backgroundColor: 'var(--color-highlight-light)',
+                border: '1px solid #eed0c8',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: '0.8125rem',
+                color: '#732314',
+              }}
+              role="alert"
             >
-              Record Shared Bill
-            </button>
-          </div>
+              {billError}
+            </div>
+          )}
+
+          {billSuccess && (
+            <div
+              style={{
+                margin: 'var(--space-4) var(--space-6) 0',
+                padding: 'var(--space-3) var(--space-4)',
+                backgroundColor: 'var(--color-secondary-light)',
+                border: '1px solid rgba(91, 117, 32, 0.25)',
+                borderRadius: 'var(--radius-sm)',
+                fontSize: '0.8125rem',
+                color: 'var(--color-secondary)',
+              }}
+              role="status"
+            >
+              {billSuccess}
+            </div>
+          )}
+
+          {/* Bill Composer or Action Row */}
+          {isComposerOpen ? (
+            <BillComposer
+              members={session.members}
+              isSubmitting={isSubmittingBill}
+              onSubmit={handleRecordBill}
+              onCancel={() => setIsComposerOpen(false)}
+            />
+          ) : (
+            <div
+              style={{
+                padding: 'var(--space-4) var(--space-6)',
+                borderTop: '1px solid var(--color-border-subtle)',
+                display: 'flex',
+                justifyContent: 'flex-end',
+              }}
+            >
+              <button type="button" className="btn-action" onClick={() => setIsComposerOpen(true)}>
+                Record Shared Bill
+              </button>
+            </div>
+          )}
         </section>
 
         {/* Right Column: Member Allocations & Resident Management */}
