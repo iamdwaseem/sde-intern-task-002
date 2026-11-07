@@ -167,4 +167,19 @@ We will run `pnpm install && pnpm check && pnpm typecheck && pnpm test` on your 
 
 ## AI usage
 
-[FILL IN: which AI tools I used and for what]
+## AI usage
+
+I used AI tools for this assignment:
+
+- **ChatGPT:** [fonts and ui suggestions]
+- **Antigravity CLI:** [code clean up,code integrity check]
+- **Claude:** code review and audit (security, type safety, leftover boilerplate), and drafting refactor prompt
+
+**What I reviewed and decided myself:**
+- The D1 schema, its named constraints and indexes.
+- The split rule (remainder cents go to members in the order they were added).
+- The payment flow: a single conditional `UPDATE ... WHERE paid_at IS NULL` plus an idempotency key, so concurrent or retried requests pay once.
+- Moving to a server-as-source-of-truth design and the one-key-per-share retry logic in the web client.
+- I read and ran all code, and checked it with `pnpm check`, `pnpm typecheck` and `pnpm test`.
+
+**What I changed after AI output:** [removed dead code and unused CSS, added input length limits, fixed error handling on refresh]
