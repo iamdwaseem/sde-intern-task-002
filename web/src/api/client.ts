@@ -7,7 +7,6 @@ import type {
   CreateHomeResponse,
   CreateMemberRequest,
   CreateMemberResponse,
-  HealthResponse,
   PayShareResponse,
   Share,
 } from './types'
@@ -28,12 +27,6 @@ interface RequestOptions {
   method?: string
   headers?: Record<string, string>
   body?: unknown
-}
-
-function isHealthResponse(data: unknown): data is HealthResponse {
-  return (
-    typeof data === 'object' && data !== null && (data as Record<string, unknown>).status === 'ok'
-  )
 }
 
 function isHome(data: unknown): data is CreateHomeResponse {
@@ -188,17 +181,6 @@ export class ApiClient {
     }
 
     return { status: response.status, data }
-  }
-
-  /**
-   * Health check endpoint: GET /api/health
-   */
-  async getHealth(): Promise<HealthResponse> {
-    const { status, data } = await this.requestJson('/api/health')
-    if (!isHealthResponse(data)) {
-      throw new ApiClientError(status, 'Malformed health response from server', data)
-    }
-    return data
   }
 
   /**

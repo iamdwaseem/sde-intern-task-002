@@ -25,7 +25,7 @@ describe('ApiClient', () => {
 
       const client = new ApiClient()
       await assert.rejects(
-        async () => client.getHealth(),
+        async () => client.getHome('h1'),
         (err: unknown) => {
           assert.ok(err instanceof ApiClientError)
           assert.equal(err.status, 200)
@@ -208,7 +208,7 @@ describe('ApiClient', () => {
 
       const client = new ApiClient()
       await assert.rejects(
-        async () => client.getHealth(),
+        async () => client.getHome('h1'),
         (err: unknown) => {
           assert.ok(err instanceof ApiClientError)
           assert.equal(err.status, 0)

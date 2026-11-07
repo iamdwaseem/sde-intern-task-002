@@ -1,9 +1,5 @@
 // Wire types matching the backend API contracts exactly.
 
-export interface HealthResponse {
-  status: 'ok'
-}
-
 export interface CreateHomeRequest {
   name: string
 }

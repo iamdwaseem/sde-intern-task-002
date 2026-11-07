@@ -3,22 +3,12 @@ import { Fragment, useState } from 'react'
 import { BillComposer } from '../components/BillComposer.tsx'
 import { useHousehold } from '../context/HouseholdContext.tsx'
 import { calculateBillMetrics } from '../utils/bill-metrics.ts'
+import { getInitials } from '../utils/initials.ts'
 import { formatCents } from '../utils/money.ts'
 
 export const Route = createFileRoute('/')({
   component: HouseholdLedgerView,
 })
-
-function getInitials(name: string): string {
-  const parts = name.trim().split(/\s+/)
-  const first = parts[0]
-  if (!first) return '—'
-  if (parts.length === 1) return first.slice(0, 2).toUpperCase()
-  const last = parts[parts.length - 1]
-  const firstInitial = first[0] ?? ''
-  const lastInitial = last && last.length > 0 ? (last[0] ?? '') : ''
-  return (firstInitial + lastInitial).toUpperCase()
-}
 
 function HouseholdLedgerView() {
   const {

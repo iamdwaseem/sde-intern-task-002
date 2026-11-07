@@ -101,3 +101,51 @@ describe('GET /api/homes/:homeId/bills', () => {
     expect(result.status).toBe(404)
   })
 })
+
+describe('field length validations', () => {
+  it('returns 400 when home name exceeds 100 characters', async () => {
+    const result = await call<{ error: string }>('POST', '/api/homes', {
+      body: { name: 'A'.repeat(101) },
+    })
+
+    expect(result.status).toBe(400)
+    expect(result.body.error).toEqual(expect.any(String))
+  })
+
+  it('returns 400 when member name exceeds 100 characters', async () => {
+    const { homeId } = await createHome([])
+    const result = await call<{ error: string }>('POST', `/api/homes/${homeId}/members`, {
+      body: { name: 'B'.repeat(101) },
+    })
+
+    expect(result.status).toBe(400)
+    expect(result.body.error).toEqual(expect.any(String))
+  })
+
+  it('returns 400 when bill title exceeds 100 characters', async () => {
+    const { homeId } = await createHome(['Asha'])
+    const result = await call<{ error: string }>('POST', `/api/homes/${homeId}/bills`, {
+      body: { title: 'C'.repeat(101), totalCents: 1000 },
+    })
+
+    expect(result.status).toBe(400)
+    expect(result.body.error).toEqual(expect.any(String))
+  })
+
+  it('returns 400 when Idempotency-Key exceeds 128 characters', async () => {
+    const { homeId } = await createHome(['Asha'])
+    const bill = await createBill(homeId, 1000)
+    const shareId = bill.body.shares[0]?.id
+
+    const result = await call<{ error: string }>(
+      'POST',
+      `/api/bills/${bill.body.id}/shares/${shareId}/pay`,
+      {
+        headers: { 'Idempotency-Key': 'K'.repeat(129) },
+      },
+    )
+
+    expect(result.status).toBe(400)
+    expect(result.body.error).toEqual(expect.any(String))
+  })
+})

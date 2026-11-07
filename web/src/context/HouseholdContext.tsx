@@ -11,6 +11,9 @@ import { ApiClientError, apiClient } from '../api/client.ts'
 import type { Bill, Home, MemberBalance } from '../api/types.ts'
 import { clearActiveHomeId, loadActiveHomeId, saveActiveHomeId } from '../utils/active-home.ts'
 
+type Flag = 'load' | 'home' | 'member' | 'bill' | 'payment'
+type BusyFlag = 'home' | 'member' | 'bill'
+
 export interface HouseholdContextValue {
   status: 'loading' | 'fresh' | 'ready' | 'load_error'
   home: Home | null
@@ -43,12 +46,12 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
   const [members, setMembers] = useState<{ memberId: string; name: string }[]>([])
   const [balances, setBalances] = useState<MemberBalance[]>([])
   const [bills, setBills] = useState<Bill[]>([])
-  const [errs, setErrs] = useState<Record<string, string | null>>({})
-  const [busy, setBusy] = useState<Record<string, boolean>>({})
+  const [errs, setErrs] = useState<Partial<Record<Flag, string | null>>>({})
+  const [busy, setBusy] = useState<Partial<Record<BusyFlag, boolean>>>({})
   const [processingShareId, setProcessingShareId] = useState<string | null>(null)
   const keysRef = useRef<Map<string, string>>(new Map())
 
-  const sync = useCallback(async (homeId: string) => {
+  const sync = useCallback(async (homeId: string, errorFlag: Flag = 'bill') => {
     try {
       const [bal, bl] = await Promise.all([
         apiClient.getBalances(homeId),
@@ -57,7 +60,12 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
       setMembers(bal.balances.map((b) => ({ memberId: b.memberId, name: b.name })))
       setBalances(bal.balances)
       setBills(bl.bills)
-    } catch {}
+    } catch (err) {
+      setErrs((e) => ({
+        ...e,
+        [errorFlag]: err instanceof Error ? err.message : 'Failed to refresh data.',
+      }))
+    }
   }, [])
 
   const loadData = useCallback(async (homeId: string): Promise<boolean> => {
@@ -106,7 +114,7 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
   }, [loadData])
 
   const mutate = useCallback(
-    async (flag: string, action: () => Promise<unknown>) => {
+    async (flag: 'member' | 'bill', action: () => Promise<unknown>) => {
       setBusy((b) => ({ ...b, [flag]: true }))
       setErrs((e) => ({ ...e, [flag]: null }))
       let ok = false
@@ -118,7 +126,7 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
       } finally {
         setBusy((b) => ({ ...b, [flag]: false }))
       }
-      if (home) await sync(home.id)
+      if (home) await sync(home.id, flag)
       return ok
     },
     [home, sync],
@@ -188,7 +196,7 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
       } finally {
         setProcessingShareId(null)
       }
-      await sync(home.id)
+      await sync(home.id, 'payment')
       return ok
     },
     [home, processingShareId, sync],

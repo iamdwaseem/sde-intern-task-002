@@ -23,6 +23,10 @@ app.post('/api/homes', async (c) => {
     return c.json({ error: 'Name must be a non-empty string' }, 400)
   }
 
+  if (name.length > 100) {
+    return c.json({ error: 'Name must not exceed 100 characters' }, 400)
+  }
+
   const id = crypto.randomUUID()
   const normalizedName = name.trim()
 
@@ -57,6 +61,10 @@ app.post('/api/homes/:homeId/members', async (c) => {
 
   if (typeof name !== 'string' || name.trim().length === 0) {
     return c.json({ error: 'Name must be a non-empty string' }, 400)
+  }
+
+  if (name.length > 100) {
+    return c.json({ error: 'Name must not exceed 100 characters' }, 400)
   }
 
   const home = await c.env.DB.prepare('SELECT id FROM homes WHERE id = ?')
@@ -104,6 +112,10 @@ app.post('/api/homes/:homeId/bills', async (c) => {
 
   if (typeof title !== 'string' || title.trim().length === 0) {
     return c.json({ error: 'Title must be a non-empty string' }, 400)
+  }
+
+  if (title.length > 100) {
+    return c.json({ error: 'Title must not exceed 100 characters' }, 400)
   }
 
   if (typeof totalCents !== 'number' || !Number.isSafeInteger(totalCents) || totalCents <= 0) {
@@ -172,6 +184,10 @@ app.post('/api/bills/:billId/shares/:shareId/pay', async (c) => {
 
   if (!idempotencyKey || idempotencyKey.trim().length === 0) {
     return c.json({ error: 'Idempotency-Key header is required' }, 400)
+  }
+
+  if (idempotencyKey.length > 128) {
+    return c.json({ error: 'Idempotency-Key must not exceed 128 characters' }, 400)
   }
 
   const share = await c.env.DB.prepare(`

@@ -228,14 +228,6 @@ body {
   background-color: var(--color-secondary);
 }
 
-.household-dot.dot-offline {
-  background-color: var(--color-highlight);
-}
-
-.household-dot.dot-stale {
-  background-color: #c48a2c;
-}
-
 .household-dot.dot-idle {
   background-color: var(--color-text-muted);
 }
@@ -261,42 +253,8 @@ body {
   border-color: var(--color-border);
 }
 
-.household-pill.pill-offline {
-  border-color: #eed0c8;
-  background-color: var(--color-highlight-light);
-}
-
-.household-pill.pill-stale {
-  border-color: #e5d8be;
-  background-color: #fbf5ea;
-}
-
 .household-pill.pill-unconfigured {
   border-style: dashed;
-}
-
-.offline-badge-pill {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  color: var(--color-highlight);
-  background-color: #faece8;
-  border: 1px solid #eed0c8;
-  padding: 1px 6px;
-  border-radius: var(--radius-pill);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.stale-badge-pill {
-  font-size: 0.6875rem;
-  font-weight: 600;
-  color: #7a5214;
-  background-color: #f5e8cf;
-  border: 1px solid #e5d8be;
-  padding: 1px 6px;
-  border-radius: var(--radius-pill);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
 }
 
 .members-count-tag {
@@ -378,14 +336,6 @@ body {
   height: 8px;
   border-radius: 50%;
   background-color: var(--color-secondary);
-}
-
-.status-indicator.dot-offline {
-  background-color: var(--color-highlight);
-}
-
-.status-indicator.dot-stale {
-  background-color: #c48a2c;
 }
 
 .status-label {
@@ -517,11 +467,6 @@ body {
   font-size: 0.9375rem;
   font-weight: 600;
   color: var(--color-text-primary);
-}
-
-.bill-date {
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
 }
 
 .bill-submeta {
@@ -818,24 +763,6 @@ body {
   letter-spacing: 0.04em;
 }
 
-/* Editorial Sidebar Note */
-.ledger-note-card {
-  margin-top: var(--space-6);
-  padding: var(--space-5);
-  background-color: var(--color-surface-subtle);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  font-size: 0.8125rem;
-  color: var(--color-text-secondary);
-  line-height: 1.5;
-}
-
-.ledger-note-title {
-  font-weight: 600;
-  color: var(--color-primary);
-  margin-bottom: var(--space-1);
-}
-
 /* ==========================================================================
    System Notices & Alert Banners
    ========================================================================== */
@@ -863,32 +790,11 @@ body {
   }
 }
 
-.banner-offline {
-  background-color: #fbf5ea;
-  border: 1px solid #ebdcc0;
-  border-left: 4px solid #c48a2c;
-  color: #5c4314;
-}
-
-.banner-stale {
-  background-color: #fcf6eb;
-  border: 1px solid #e8dbbf;
-  border-left: 4px solid #b57a1e;
-  color: #5a4112;
-}
-
 .banner-recovery {
   background-color: var(--color-highlight-light);
   border: 1px solid #eed0c8;
   border-left: 4px solid var(--color-highlight);
   color: #732314;
-}
-
-.banner-warning {
-  background-color: #fbf5ea;
-  border: 1px solid #ebdcc0;
-  border-left: 4px solid #c48a2c;
-  color: #5c4314;
 }
 
 .banner-action-btn {
@@ -912,11 +818,6 @@ body {
 .banner-action-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
-}
-
-.banner-icon {
-  flex-shrink: 0;
-  margin-top: 2px;
 }
 
 .banner-content {
@@ -1018,13 +919,6 @@ body {
   font-size: 0.8125rem;
   color: var(--color-text-secondary);
   line-height: 1.4;
-}
-
-.onboarding-feature-bullet {
-  color: var(--color-secondary);
-  font-weight: 700;
-  font-size: 0.9375rem;
-  line-height: 1;
 }
 
 .form-group {
@@ -1265,27 +1159,6 @@ body {
 .member-error-text {
   font-size: 0.75rem;
   color: var(--color-highlight);
-}
-
-.member-reconcile-btn {
-  background-color: var(--color-surface-subtle);
-  border: 1px solid var(--color-border);
-  color: var(--color-text-primary);
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background-color var(--duration-snappy) var(--ease-out);
-}
-
-.member-reconcile-btn:hover:not(:disabled) {
-  background-color: var(--color-border-subtle);
-}
-
-.member-reconcile-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
 }
 
 .empty-members-box {
@@ -1915,9 +1788,5 @@ body {
 
   .add-member-btn {
     width: 100%;
-  }
-
-  .offline-badge-pill {
-    display: none;
   }
 }

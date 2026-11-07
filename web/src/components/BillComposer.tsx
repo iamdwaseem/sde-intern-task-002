@@ -1,6 +1,7 @@
 import { useId, useState } from 'react'
 import type { Member } from '../api/types.ts'
 import { computeLiveSplitPreview, validateBillInput } from '../utils/bill-composer.ts'
+import { getInitials } from '../utils/initials.ts'
 import { formatCents } from '../utils/money.ts'
 
 export interface BillComposerProps {
@@ -8,19 +9,6 @@ export interface BillComposerProps {
   isSubmitting?: boolean
   onSubmit?: (data: { title: string; totalCents: number }) => Promise<void> | void
   onCancel?: () => void
-  initialTitle?: string
-  initialAmount?: string
-}
-
-function getInitials(name: string): string {
-  const parts = name.trim().split(/\s+/)
-  const first = parts[0]
-  if (!first) return '—'
-  if (parts.length === 1) return first.slice(0, 2).toUpperCase()
-  const last = parts[parts.length - 1]
-  const firstInitial = first[0] ?? ''
-  const lastInitial = last && last.length > 0 ? (last[0] ?? '') : ''
-  return (firstInitial + lastInitial).toUpperCase()
 }
 
 export function BillComposer({
@@ -28,11 +16,9 @@ export function BillComposer({
   isSubmitting = false,
   onSubmit,
   onCancel,
-  initialTitle = '',
-  initialAmount = '',
 }: BillComposerProps) {
-  const [title, setTitle] = useState(initialTitle)
-  const [amountInput, setAmountInput] = useState(initialAmount)
+  const [title, setTitle] = useState('')
+  const [amountInput, setAmountInput] = useState('')
   const [touched, setTouched] = useState({ title: false, amount: false })
   const [submitAttempted, setSubmitAttempted] = useState(false)
 
@@ -200,7 +186,6 @@ export function BillComposer({
                 ))}
               </div>
 
-              {/* Exact Penny Audit Strip */}
               <div className="split-audit-strip">
                 <div className="audit-formula tabular-numbers">
                   <strong>Total:</strong> {splitPreview.formattedTotal} = {members.length} ×{' '}
