@@ -250,6 +250,94 @@ app.post('/api/bills/:billId/shares/:shareId/pay', async (c) => {
     paidAt,
   })
 })
+app.get('/api/homes/:homeId', async (c) => {
+  const homeId = c.req.param('homeId')
+
+  const home = await c.env.DB.prepare('SELECT id, name FROM homes WHERE id = ?')
+    .bind(homeId)
+    .first<{ id: string; name: string }>()
+
+  if (!home) {
+    return c.json({ error: 'Home not found' }, 404)
+  }
+
+  return c.json({ id: home.id, name: home.name })
+})
+
+app.get('/api/homes/:homeId/bills', async (c) => {
+  const homeId = c.req.param('homeId')
+
+  const homeExists = await c.env.DB.prepare('SELECT id FROM homes WHERE id = ?')
+    .bind(homeId)
+    .first<{ id: string }>()
+
+  if (!homeExists) {
+    return c.json({ error: 'Home not found' }, 404)
+  }
+
+  const rows = await c.env.DB.prepare(`
+      SELECT
+        b.id        AS billId,
+        b.home_id   AS homeId,
+        b.title     AS title,
+        b.total_cents AS totalCents,
+        s.id        AS shareId,
+        s.member_id AS memberId,
+        s.amount_cents AS amountCents,
+        s.paid_at   AS paidAt
+      FROM bills b
+      INNER JOIN shares s ON s.bill_id = b.id AND s.home_id = b.home_id
+      INNER JOIN members m ON m.id = s.member_id
+      WHERE b.home_id = ?
+      ORDER BY b.rowid DESC, m.position ASC
+    `)
+    .bind(homeId)
+    .all<{
+      billId: string
+      homeId: string
+      title: string
+      totalCents: number
+      shareId: string
+      memberId: string
+      amountCents: number
+      paidAt: string | null
+    }>()
+
+  const billMap = new Map<
+    string,
+    {
+      id: string
+      homeId: string
+      title: string
+      totalCents: number
+      shares: { id: string; memberId: string; amountCents: number; paidAt: string | null }[]
+    }
+  >()
+
+  for (const row of rows.results) {
+    if (!billMap.has(row.billId)) {
+      billMap.set(row.billId, {
+        id: row.billId,
+        homeId: row.homeId,
+        title: row.title,
+        totalCents: row.totalCents,
+        shares: [],
+      })
+    }
+    const bill = billMap.get(row.billId)
+    if (bill) {
+      bill.shares.push({
+        id: row.shareId,
+        memberId: row.memberId,
+        amountCents: row.amountCents,
+        paidAt: row.paidAt,
+      })
+    }
+  }
+
+  return c.json({ bills: Array.from(billMap.values()) })
+})
+
 app.get('/api/homes/:homeId/balances', async (c) => {
   const homeId = c.req.param('homeId')
 
