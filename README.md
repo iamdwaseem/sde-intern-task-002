@@ -155,3 +155,16 @@ You must understand every line you submit. We check this with your video and in 
 5. Paste the repository link and the video link in the application form.
 
 We will run `pnpm install && pnpm check && pnpm typecheck && pnpm test` on your repository.
+
+
+## Decisions
+
+1. **Money as integer cents with a CHECK constraint:** All monetary values are stored as integer cents (e.g., 100 = $1.00) with a `CHECK (typeof(total_cents) = 'integer' AND total_cents > 0)` constraint on bills and `CHECK (amount_cents >= 0)` on shares. This prevents floating-point rounding errors entirely and makes the remainder-distribution algorithm (`totalCents % members`) exact.
+
+2. **Payments use a conditional UPDATE plus an idempotency key:** The pay endpoint runs `UPDATE shares SET paid_at = ?, idempotency_key = ? WHERE id = ? AND bill_id = ? AND paid_at IS NULL`. Because D1/SQLite serializes writes, only one concurrent request can flip `paid_at` from NULL; every subsequent request with the same key returns the existing paid result (200), and a different key gets a 409. The client stores one key per share in a `useRef<Map>` and reuses it on retries, so network timeouts never cause double payments.
+
+3. **The server (D1) is the single source of truth:** The browser stores only the active home ID in localStorage. All bills, members, and balances are fetched fresh from the API on load and after every mutation. This eliminates the previous localStorage session layer (StoredHomeSession, reconcile logic, offline/stale states) and makes the client stateless—a page reload always shows the authoritative server state.
+
+## AI usage
+
+[FILL IN: which AI tools I used and for what]
