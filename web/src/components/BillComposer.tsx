@@ -211,7 +211,7 @@ export function BillComposer({
                 </div>
                 <div className="audit-badge">
                   <span className="audit-dot" aria-hidden="true" />
-                  Exact Penny Precision (0¢ rounding error)
+                  Splits evenly, extra cents go to the first members
                 </div>
               </div>
             </>

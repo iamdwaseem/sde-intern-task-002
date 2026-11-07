@@ -1,5 +1,6 @@
 import type {
   BalancesResponse,
+  BillsResponse,
   CreateBillRequest,
   CreateBillResponse,
   CreateHomeRequest,
@@ -106,6 +107,12 @@ function isBalancesResponse(data: unknown): data is BalancesResponse {
   if (typeof data !== 'object' || data === null) return false
   const rec = data as Record<string, unknown>
   return Array.isArray(rec.balances) && rec.balances.every(isMemberBalance)
+}
+
+function isBillsResponse(data: unknown): data is BillsResponse {
+  if (typeof data !== 'object' || data === null) return false
+  const rec = data as Record<string, unknown>
+  return Array.isArray(rec.bills) && rec.bills.every(isBill)
 }
 
 export class ApiClient {
@@ -277,6 +284,30 @@ export class ApiClient {
     )
     if (!isBalancesResponse(data)) {
       throw new ApiClientError(status, 'Malformed balances response from server', data)
+    }
+    return data
+  }
+
+  /**
+   * Retrieve a home by id: GET /api/homes/:homeId
+   */
+  async getHome(homeId: string): Promise<CreateHomeResponse> {
+    const { status, data } = await this.requestJson(`/api/homes/${encodeURIComponent(homeId)}`)
+    if (!isHome(data)) {
+      throw new ApiClientError(status, 'Malformed home response from server', data)
+    }
+    return data
+  }
+
+  /**
+   * Retrieve all bills for a home: GET /api/homes/:homeId/bills
+   */
+  async getBills(homeId: string): Promise<BillsResponse> {
+    const { status, data } = await this.requestJson(
+      `/api/homes/${encodeURIComponent(homeId)}/bills`,
+    )
+    if (!isBillsResponse(data)) {
+      throw new ApiClientError(status, 'Malformed bills response from server', data)
     }
     return data
   }

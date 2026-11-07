@@ -1,506 +1,235 @@
-import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from 'react'
-import { apiClient } from '../api/client.ts'
-import type { Home, PendingMemberCreation, StoredHomeSession } from '../api/types.ts'
 import {
-  addHouseholdBill,
-  addHouseholdMember,
-  clearActiveHomeId,
-  clearHomeSession,
-  payHouseholdShare,
-  persistNewHouseholdSession,
-  reconcileHouseholdRoster,
-  restoreHouseholdSession,
-} from '../utils/storage.ts'
-
-export type HouseholdStatus =
-  | 'loading'
-  | 'fresh'
-  | 'corrupted'
-  | 'invalid_home'
-  | 'api_unavailable'
-  | 'stale'
-  | 'ready'
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from 'react'
+import { ApiClientError, apiClient } from '../api/client.ts'
+import type { Bill, Home, MemberBalance } from '../api/types.ts'
+import { clearActiveHomeId, loadActiveHomeId, saveActiveHomeId } from '../utils/active-home.ts'
 
 export interface HouseholdContextValue {
-  status: HouseholdStatus
-  session: StoredHomeSession | null
-  error: string | null
+  status: 'loading' | 'fresh' | 'ready' | 'load_error'
+  home: Home | null
+  members: { memberId: string; name: string }[]
+  balances: MemberBalance[]
+  bills: Bill[]
+  loadError: string | null
   homeError: string | null
   memberError: string | null
   billError: string | null
   paymentError: string | null
-  paymentSuccess: string | null
-  persistenceWarning: string | null
-  pendingMember: PendingMemberCreation | null
   isSubmittingHome: boolean
   isSubmittingMember: boolean
   isSubmittingBill: boolean
   processingShareId: string | null
-  isReconciling: boolean
+  keysRef: { current: Map<string, string> }
   createHousehold: (name: string) => Promise<boolean>
   addMember: (name: string) => Promise<boolean>
   createBill: (title: string, totalCents: number) => Promise<boolean>
   payShare: (billId: string, shareId: string) => Promise<boolean>
-  reconcileRoster: () => Promise<boolean>
-  dismissRecoveryBanner: () => void
-  dismissPersistenceWarning: () => void
-  dismissBillError: () => void
-  dismissPaymentError: () => void
-  dismissPaymentSuccess: () => void
   resetHousehold: () => void
+  reload: () => void
 }
 
 const HouseholdContext = createContext<HouseholdContextValue | null>(null)
 
 export function HouseholdProvider({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<HouseholdStatus>('loading')
-  const [session, setSession] = useState<StoredHomeSession | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [homeError, setHomeError] = useState<string | null>(null)
-  const [memberError, setMemberError] = useState<string | null>(null)
-  const [billError, setBillError] = useState<string | null>(null)
-  const [paymentError, setPaymentError] = useState<string | null>(null)
-  const [paymentSuccess, setPaymentSuccess] = useState<string | null>(null)
-  const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null)
-  const [pendingMember, setPendingMember] = useState<PendingMemberCreation | null>(null)
-  const [isSubmittingHome, setIsSubmittingHome] = useState(false)
-  const [isSubmittingMember, setIsSubmittingMember] = useState(false)
-  const [isSubmittingBill, setIsSubmittingBill] = useState(false)
+  const [status, setStatus] = useState<'loading' | 'fresh' | 'ready' | 'load_error'>('loading')
+  const [home, setHome] = useState<Home | null>(null)
+  const [members, setMembers] = useState<{ memberId: string; name: string }[]>([])
+  const [balances, setBalances] = useState<MemberBalance[]>([])
+  const [bills, setBills] = useState<Bill[]>([])
+  const [errs, setErrs] = useState<Record<string, string | null>>({})
+  const [busy, setBusy] = useState<Record<string, boolean>>({})
   const [processingShareId, setProcessingShareId] = useState<string | null>(null)
-  const [isReconciling, setIsReconciling] = useState(false)
+  const keysRef = useRef<Map<string, string>>(new Map())
 
-  // Initialize session on mount
-  useEffect(() => {
-    let mounted = true
+  const sync = useCallback(async (homeId: string) => {
+    try {
+      const [bal, bl] = await Promise.all([
+        apiClient.getBalances(homeId),
+        apiClient.getBills(homeId),
+      ])
+      setMembers(bal.balances.map((b) => ({ memberId: b.memberId, name: b.name })))
+      setBalances(bal.balances)
+      setBills(bl.bills)
+    } catch {}
+  }, [])
 
-    async function restore() {
-      const result = await restoreHouseholdSession(apiClient)
-      if (!mounted) return
-
-      switch (result.status) {
-        case 'fresh':
-          setStatus('fresh')
-          setSession(null)
-          setError(null)
-          break
-        case 'corrupted':
-          setStatus('corrupted')
-          setSession(null)
-          setError(result.error ?? null)
-          break
-        case 'invalid_home':
-          setStatus('invalid_home')
-          setSession(null)
-          setError(result.error ?? null)
-          break
-        case 'api_unavailable':
-          setStatus('api_unavailable')
-          setSession(result.session ?? null)
-          setError(result.error ?? null)
-          if (result.persistenceWarning) {
-            setPersistenceWarning(result.persistenceWarning)
-          }
-          break
-        case 'stale':
-          setStatus('stale')
-          setSession(result.session ?? null)
-          setError(result.error ?? null)
-          if (result.persistenceWarning) {
-            setPersistenceWarning(result.persistenceWarning)
-          }
-          break
-        case 'ready':
-          setStatus('ready')
-          setSession(result.session ?? null)
-          setError(null)
-          if (result.persistenceWarning) {
-            setPersistenceWarning(result.persistenceWarning)
-          }
-          break
+  const loadData = useCallback(async (homeId: string): Promise<boolean> => {
+    try {
+      const [h, bal, b] = await Promise.all([
+        apiClient.getHome(homeId),
+        apiClient.getBalances(homeId),
+        apiClient.getBills(homeId),
+      ])
+      setHome(h)
+      setMembers(bal.balances.map((m) => ({ memberId: m.memberId, name: m.name })))
+      setBalances(bal.balances)
+      setBills(b.bills)
+      setStatus('ready')
+      return true
+    } catch (err) {
+      if (err instanceof ApiClientError && err.status === 404) {
+        clearActiveHomeId()
+        setStatus('fresh')
+        setErrs((e) => ({
+          ...e,
+          load: 'Previous session was not found on the server. Please create a new home.',
+        }))
+        return false
       }
-
-      // Initialize pendingMember from restored session
-      if (result.session?.pendingMemberCreation) {
-        setPendingMember(result.session.pendingMemberCreation)
-        setMemberError(
-          `Network failure during resident creation for "${result.session.pendingMemberCreation.name}". The outcome cannot yet be confirmed. To prevent duplicate entries, do not retry immediately. Use "Reconcile with Server" once connectivity is restored.`,
-        )
-      } else {
-        setPendingMember(null)
-      }
-    }
-
-    restore()
-
-    return () => {
-      mounted = false
+      setStatus('load_error')
+      setErrs((e) => ({
+        ...e,
+        load: err instanceof Error ? err.message : 'Failed to load household data.',
+      }))
+      return false
     }
   }, [])
+
+  useEffect(() => {
+    const id = loadActiveHomeId()
+    id ? loadData(id) : setStatus('fresh')
+  }, [loadData])
+
+  const reload = useCallback(() => {
+    const id = loadActiveHomeId()
+    if (!id) return setStatus('fresh')
+    setStatus('loading')
+    setErrs((e) => ({ ...e, load: null }))
+    loadData(id)
+  }, [loadData])
+
+  const mutate = useCallback(
+    async (flag: string, action: () => Promise<unknown>) => {
+      setBusy((b) => ({ ...b, [flag]: true }))
+      setErrs((e) => ({ ...e, [flag]: null }))
+      let ok = false
+      try {
+        await action()
+        ok = true
+      } catch (err) {
+        setErrs((e) => ({ ...e, [flag]: err instanceof Error ? err.message : 'Failed' }))
+      } finally {
+        setBusy((b) => ({ ...b, [flag]: false }))
+      }
+      if (home) await sync(home.id)
+      return ok
+    },
+    [home, sync],
+  )
 
   const createHousehold = useCallback(
     async (name: string): Promise<boolean> => {
       const trimmed = name.trim()
-      if (!trimmed) {
-        setHomeError('Household name cannot be empty')
+      if (!trimmed || busy.home) {
+        if (!trimmed) setErrs((e) => ({ ...e, home: 'Household name cannot be empty' }))
         return false
       }
-
-      if (isSubmittingHome) {
-        return false
-      }
-
-      setIsSubmittingHome(true)
-      setHomeError(null)
-
+      setBusy((b) => ({ ...b, home: true }))
+      setErrs((e) => ({ ...e, home: null }))
       try {
-        const home: Home = await apiClient.createHome(trimmed)
-
-        // Persist session before writing the active household ID and check both results
-        const {
-          session: newSession,
-          sessionSaved,
-          activeIdSaved,
-        } = persistNewHouseholdSession(home)
-
-        // Retain household in React state regardless of local storage outcome
-        setSession(newSession)
-        setStatus('ready')
-        setError(null)
-        setHomeError(null)
-
-        if (!sessionSaved || !activeIdSaved) {
-          setPersistenceWarning(
-            'Household created on the server, but local browser storage failed. Your session is active in memory but will not survive a page reload.',
-          )
-        } else {
-          setPersistenceWarning(null)
-        }
-
-        return true
+        const newHome = await apiClient.createHome(trimmed)
+        saveActiveHomeId(newHome.id)
+        return await loadData(newHome.id)
       } catch (err) {
-        // Only set homeError if the server creation call actually failed
-        setHomeError(err instanceof Error ? err.message : 'Failed to establish household')
+        setErrs((e) => ({
+          ...e,
+          home: err instanceof Error ? err.message : 'Failed to create household',
+        }))
         return false
       } finally {
-        setIsSubmittingHome(false)
+        setBusy((b) => ({ ...b, home: false }))
       }
     },
-    [isSubmittingHome],
+    [busy.home, loadData],
   )
 
   const addMember = useCallback(
-    async (name: string): Promise<boolean> => {
+    async (name: string) => {
       const trimmed = name.trim()
-      if (!trimmed) {
-        setMemberError('Resident name cannot be empty')
-        return false
-      }
-
-      if (!session) {
-        setMemberError('No active household session')
-        return false
-      }
-
-      if (isSubmittingMember) {
-        return false
-      }
-
-      setIsSubmittingMember(true)
-      setMemberError(null)
-
-      try {
-        const result = await addHouseholdMember(apiClient, session, trimmed)
-        switch (result.status) {
-          case 'success':
-            setSession(result.session)
-            setStatus('ready')
-            setError(null)
-            setMemberError(null)
-            setPendingMember(null)
-            if (result.persistenceWarning) {
-              setPersistenceWarning(result.persistenceWarning)
-            }
-            return true
-
-          case 'api_unavailable':
-            setSession(result.session)
-            setStatus('api_unavailable')
-            setError(
-              `Offline: Resident added, but balance refresh failed (${result.error}). Displaying cached balances.`,
-            )
-            setMemberError(`Resident added, but balances could not be refreshed (${result.error})`)
-            if (result.persistenceWarning) {
-              setPersistenceWarning(result.persistenceWarning)
-            }
-            return true
-
-          case 'stale':
-            setSession(result.session)
-            setStatus('stale')
-            setError(
-              `Stale Balances: Resident added, but balance verification could not be completed (${result.error}). Displaying cached balances.`,
-            )
-            setMemberError(`Resident added, but balances could not be verified (${result.error})`)
-            if (result.persistenceWarning) {
-              setPersistenceWarning(result.persistenceWarning)
-            }
-            return true
-
-          case 'uncertain':
-            setSession(result.session)
-            setPendingMember(result.pendingMember)
-            setMemberError(result.error)
-            if (result.persistenceWarning) {
-              setPersistenceWarning(result.persistenceWarning)
-            }
-            return false
-
-          case 'invalid_home':
-            setSession(null)
-            setStatus('invalid_home')
-            setError(result.error)
-            setMemberError(null)
-            setPendingMember(null)
-            return false
-
-          case 'error':
-            setMemberError(result.error)
-            return false
-        }
-      } finally {
-        setIsSubmittingMember(false)
-      }
+      if (!trimmed || !home || busy.member) return false
+      return mutate('member', () => apiClient.createMember(home.id, trimmed))
     },
-    [session, isSubmittingMember],
+    [home, busy.member, mutate],
   )
 
   const createBill = useCallback(
-    async (title: string, totalCents: number): Promise<boolean> => {
-      if (!session) return false
-      setIsSubmittingBill(true)
-      setBillError(null)
-
-      try {
-        const result = await addHouseholdBill(apiClient, session, title, totalCents)
-        switch (result.status) {
-          case 'success':
-            if (result.session) {
-              setSession(result.session)
-            }
-            if (result.persistenceWarning) {
-              setPersistenceWarning(result.persistenceWarning)
-            }
-            return true
-
-          case 'invalid_home':
-            setSession(null)
-            setStatus('invalid_home')
-            setError(result.error ?? null)
-            setPendingMember(null)
-            setMemberError(null)
-            return false
-
-          case 'api_unavailable':
-            setStatus('api_unavailable')
-            setError(result.error ?? null)
-            return false
-
-          case 'stale':
-            setStatus('stale')
-            setError(result.error ?? null)
-            return false
-
-          case 'error':
-            setBillError(result.error ?? 'Failed to record bill')
-            return false
-        }
-      } catch (err: unknown) {
-        setBillError(err instanceof Error ? err.message : 'Failed to record bill')
-        return false
-      } finally {
-        setIsSubmittingBill(false)
-      }
+    async (title: string, totalCents: number) => {
+      if (!home || busy.bill) return false
+      return mutate('bill', () => apiClient.createBill(home.id, title, totalCents))
     },
-    [session],
+    [home, busy.bill, mutate],
   )
-
-  const reconcileRoster = useCallback(async (): Promise<boolean> => {
-    if (!session) return false
-    setIsReconciling(true)
-    try {
-      const result = await reconcileHouseholdRoster(apiClient, session, pendingMember)
-      switch (result.status) {
-        case 'ready':
-          setSession(result.session)
-          setStatus('ready')
-          setError(null)
-          if (result.resolvedPending) {
-            setPendingMember(null)
-            setMemberError(null)
-          } else if (result.resolvedPending === false) {
-            // Keep pendingMember and preserve uncertain warning
-            setMemberError(
-              result.error ??
-                `Reconciliation checked the server, but resident has not appeared yet. The outcome remains uncertain; avoid re-adding this resident to prevent duplicates.`,
-            )
-          }
-          if (result.persistenceWarning) {
-            setPersistenceWarning(result.persistenceWarning)
-          }
-          return true
-
-        case 'api_unavailable':
-          setStatus('api_unavailable')
-          setError(result.error)
-          return false
-
-        case 'stale':
-          setStatus('stale')
-          setError(result.error)
-          return false
-
-        case 'invalid_home':
-          setSession(null)
-          setStatus('invalid_home')
-          setError(result.error)
-          setPendingMember(null)
-          setMemberError(null)
-          return false
-      }
-    } finally {
-      setIsReconciling(false)
-    }
-  }, [session, pendingMember])
 
   const payShare = useCallback(
     async (billId: string, shareId: string): Promise<boolean> => {
-      if (!session) return false
-      if (processingShareId) return false
-
+      if (!home || processingShareId !== null) return false
+      let key = keysRef.current.get(shareId)
+      if (!key) {
+        key = crypto.randomUUID()
+        keysRef.current.set(shareId, key)
+      }
       setProcessingShareId(shareId)
-      setPaymentError(null)
-      setPaymentSuccess(null)
-
+      setErrs((e) => ({ ...e, payment: null }))
+      let ok = false
       try {
-        const result = await payHouseholdShare(apiClient, session, billId, shareId)
-        switch (result.status) {
-          case 'success':
-            setSession(result.session)
-            setStatus('ready')
-            setPaymentSuccess('Share payment recorded successfully.')
-            if (result.persistenceWarning) {
-              setPersistenceWarning(result.persistenceWarning)
-            }
-            return true
-
-          case 'storage_error':
-            setSession(result.session)
-            setPaymentError(result.error)
-            if (result.persistenceWarning) {
-              setPersistenceWarning(result.persistenceWarning)
-            }
-            return false
-
-          case 'conflict':
-            setSession(result.session)
-            setPaymentError(result.error)
-            return false
-
-          case 'api_unavailable':
-            setSession(result.session)
-            setPaymentError(result.error)
-            return false
-
-          case 'invalid_home':
-            setSession(null)
-            setStatus('invalid_home')
-            setError(result.error)
-            return false
-
-          case 'error':
-            if ('session' in result && result.session) {
-              setSession(result.session)
-            }
-            setPaymentError(result.error)
-            return false
-        }
-      } catch (err: unknown) {
-        setPaymentError(err instanceof Error ? err.message : 'Payment failed.')
-        return false
+        await apiClient.payShare(billId, shareId, key)
+        keysRef.current.delete(shareId)
+        ok = true
+      } catch (err) {
+        if (err instanceof ApiClientError && err.status === 409) keysRef.current.delete(shareId)
+        setErrs((e) => ({ ...e, payment: err instanceof Error ? err.message : 'Payment failed.' }))
       } finally {
         setProcessingShareId(null)
       }
+      await sync(home.id)
+      return ok
     },
-    [session, processingShareId],
+    [home, processingShareId, sync],
   )
 
-  const dismissRecoveryBanner = useCallback(() => {
-    setError(null)
-  }, [])
-
-  const dismissPersistenceWarning = useCallback(() => {
-    setPersistenceWarning(null)
-  }, [])
-
-  const dismissBillError = useCallback(() => {
-    setBillError(null)
-  }, [])
-
-  const dismissPaymentError = useCallback(() => {
-    setPaymentError(null)
-  }, [])
-
-  const dismissPaymentSuccess = useCallback(() => {
-    setPaymentSuccess(null)
-  }, [])
-
   const resetHousehold = useCallback(() => {
-    if (session?.home.id) {
-      clearHomeSession(session.home.id)
-    }
     clearActiveHomeId()
-    setSession(null)
     setStatus('fresh')
-    setError(null)
-    setHomeError(null)
-    setMemberError(null)
-    setBillError(null)
-    setPaymentError(null)
-    setPaymentSuccess(null)
+    setHome(null)
+    setMembers([])
+    setBalances([])
+    setBills([])
+    setErrs({})
     setProcessingShareId(null)
-    setPendingMember(null)
-    setPersistenceWarning(null)
-  }, [session])
+    keysRef.current.clear()
+  }, [])
 
   return (
     <HouseholdContext.Provider
       value={{
         status,
-        session,
-        error,
-        homeError,
-        memberError,
-        billError,
-        paymentError,
-        paymentSuccess,
-        persistenceWarning,
-        pendingMember,
-        isSubmittingHome,
-        isSubmittingMember,
-        isSubmittingBill,
+        home,
+        members,
+        balances,
+        bills,
+        loadError: errs.load ?? null,
+        homeError: errs.home ?? null,
+        memberError: errs.member ?? null,
+        billError: errs.bill ?? null,
+        paymentError: errs.payment ?? null,
+        isSubmittingHome: Boolean(busy.home),
+        isSubmittingMember: Boolean(busy.member),
+        isSubmittingBill: Boolean(busy.bill),
         processingShareId,
-        isReconciling,
+        keysRef,
         createHousehold,
         addMember,
         createBill,
         payShare,
-        reconcileRoster,
-        dismissRecoveryBanner,
-        dismissPersistenceWarning,
-        dismissBillError,
-        dismissPaymentError,
-        dismissPaymentSuccess,
         resetHousehold,
+        reload,
       }}
     >
       {children}
@@ -510,8 +239,6 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
 
 export function useHousehold(): HouseholdContextValue {
   const context = useContext(HouseholdContext)
-  if (!context) {
-    throw new Error('useHousehold must be used within a HouseholdProvider')
-  }
+  if (!context) throw new Error('useHousehold must be used within a HouseholdProvider')
   return context
 }

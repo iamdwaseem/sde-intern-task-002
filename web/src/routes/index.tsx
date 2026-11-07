@@ -2,8 +2,8 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Fragment, useState } from 'react'
 import { BillComposer } from '../components/BillComposer.tsx'
 import { useHousehold } from '../context/HouseholdContext.tsx'
+import { calculateBillMetrics } from '../utils/bill-metrics.ts'
 import { formatCents } from '../utils/money.ts'
-import { calculateBillMetrics, formatBillDate } from '../utils/storage.ts'
 
 export const Route = createFileRoute('/')({
   component: HouseholdLedgerView,
@@ -23,30 +23,25 @@ function getInitials(name: string): string {
 function HouseholdLedgerView() {
   const {
     status,
-    session,
-    error,
+    home,
+    members,
+    balances,
+    bills,
+    loadError,
     homeError,
     memberError,
     billError,
     paymentError,
-    paymentSuccess,
-    persistenceWarning,
-    pendingMember,
     isSubmittingHome,
     isSubmittingMember,
     isSubmittingBill,
     processingShareId,
-    isReconciling,
+    keysRef,
     createHousehold,
     addMember,
     createBill,
     payShare,
-    reconcileRoster,
-    dismissRecoveryBanner,
-    dismissPersistenceWarning,
-    dismissBillError,
-    dismissPaymentError,
-    dismissPaymentSuccess,
+    reload,
   } = useHousehold()
 
   const [homeNameInput, setHomeNameInput] = useState('')
@@ -54,7 +49,7 @@ function HouseholdLedgerView() {
   const [isComposerOpen, setIsComposerOpen] = useState(false)
   const [billSuccess, setBillSuccess] = useState<string | null>(null)
 
-  // 1. Initial restoration loading state
+  // 1. Loading skeleton
   if (status === 'loading') {
     return (
       <main className="app-shell" aria-busy="true" aria-label="Loading ledger">
@@ -66,8 +61,29 @@ function HouseholdLedgerView() {
     )
   }
 
-  // 2. Household Onboarding View (fresh, corrupted, or 404 recovery)
-  if (status === 'fresh' || status === 'corrupted' || status === 'invalid_home') {
+  // 2. Load error state — show error banner with retry
+  if (status === 'load_error') {
+    return (
+      <main className="app-shell">
+        <div className="onboarding-wrapper">
+          <section className="system-banner banner-recovery" role="alert" aria-live="polite">
+            <div className="banner-content">
+              <div className="banner-title">Failed to load household</div>
+              <div className="banner-description">
+                {loadError ?? 'An unexpected error occurred.'}
+              </div>
+              <button type="button" className="banner-action-btn" onClick={reload}>
+                Retry
+              </button>
+            </div>
+          </section>
+        </div>
+      </main>
+    )
+  }
+
+  // 3. Fresh state — show create home form
+  if (status === 'fresh') {
     const handleCreateHome = async (e: React.FormEvent) => {
       e.preventDefault()
       const ok = await createHousehold(homeNameInput)
@@ -79,68 +95,32 @@ function HouseholdLedgerView() {
     return (
       <main className="app-shell">
         <div className="onboarding-wrapper">
-          {/* Recovery Notification if returning from an invalid or corrupted session */}
-          {error && (
+          {loadError && (
             <section className="system-banner banner-recovery" role="alert" aria-live="polite">
-              <div className="banner-icon" aria-hidden="true">
-                <svg
-                  aria-hidden="true"
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="8" x2="12" y2="12" />
-                  <line x1="12" y1="16" x2="12.01" y2="16" />
-                </svg>
-              </div>
               <div className="banner-content">
-                <div className="banner-title">
-                  {status === 'invalid_home'
-                    ? 'Household Session Cleared (Server 404)'
-                    : 'Session Storage Reset'}
-                </div>
-                <div className="banner-description">{error}</div>
-                <button
-                  type="button"
-                  className="banner-dismiss-btn"
-                  onClick={dismissRecoveryBanner}
-                >
-                  Dismiss notice
-                </button>
+                <div className="banner-title">Session Cleared</div>
+                <div className="banner-description">{loadError}</div>
               </div>
             </section>
           )}
 
           <div className="onboarding-card">
             <span className="onboarding-eyebrow">Household Setup</span>
-            <h1 className="onboarding-title">Establish Your Shared Ledger</h1>
+            <h1 className="onboarding-title">Create Home</h1>
             <p className="onboarding-description">
-              Create a dedicated household ledger to record living expenditures, split utilities
-              with penny-perfect accuracy, and maintain a transparent record for all residents.
+              Create a household to record shared living expenses, split bills equally among
+              residents, and track who owes what.
             </p>
 
             <div className="onboarding-features">
               <div className="onboarding-feature-item">
-                <span className="onboarding-feature-bullet" aria-hidden="true">
-                  §
-                </span>
                 <span>
                   <strong>Equal Allocations:</strong> Flat split across all household residents.
                 </span>
               </div>
               <div className="onboarding-feature-item">
-                <span className="onboarding-feature-bullet" aria-hidden="true">
-                  §
-                </span>
                 <span>
-                  <strong>Sequential Pennies:</strong> Odd remainders distributed in member roster
-                  order.
+                  <strong>Splits evenly, extra cents go to the first members.</strong>
                 </span>
               </div>
             </div>
@@ -167,19 +147,6 @@ function HouseholdLedgerView() {
 
               {homeError && (
                 <div className="form-error-banner" role="alert" aria-live="assertive">
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    aria-hidden="true"
-                  >
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="12" y1="8" x2="12" y2="12" />
-                    <line x1="12" y1="16" x2="12.01" y2="16" />
-                  </svg>
                   <span>{homeError}</span>
                 </div>
               )}
@@ -189,7 +156,7 @@ function HouseholdLedgerView() {
                 className="btn-submit-home"
                 disabled={isSubmittingHome || !homeNameInput.trim()}
               >
-                {isSubmittingHome ? 'Establishing Ledger...' : 'Create Household Ledger'}
+                {isSubmittingHome ? 'Creating...' : 'Create Household'}
               </button>
             </form>
           </div>
@@ -198,15 +165,10 @@ function HouseholdLedgerView() {
     )
   }
 
-  // 3. Active Household View (ready or api_unavailable)
-  if (!session) {
-    return null
-  }
+  // 4. Ready state — main household view
+  if (!home) return null
 
-  const isOffline = status === 'api_unavailable'
-  const isStale = status === 'stale'
-
-  const metrics = calculateBillMetrics(session.bills)
+  const metrics = calculateBillMetrics(bills)
 
   const handleRecordBill = async ({ title, totalCents }: { title: string; totalCents: number }) => {
     setBillSuccess(null)
@@ -225,148 +187,38 @@ function HouseholdLedgerView() {
     }
   }
 
+  // Map memberId -> name for share lookups
+  const memberMap = new Map(members.map((m) => [m.memberId, m.name]))
+
   return (
     <main className="app-shell">
-      {/* Offline Notice Banner */}
-      {isOffline && (
-        <section className="system-banner banner-offline" role="status" aria-live="polite">
-          <div className="banner-icon" aria-hidden="true">
-            <svg
-              aria-hidden="true"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <line x1="1" y1="1" x2="23" y2="23" />
-              <path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55" />
-              <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39" />
-              <path d="M10.71 5.05A16 16 0 0 1 22.58 9" />
-              <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88" />
-              <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
-              <line x1="12" y1="20" x2="12.01" y2="20" />
-            </svg>
-          </div>
-          <div className="banner-content">
-            <div className="banner-title">Offline Mode — Local Cache Active</div>
-            <div className="banner-description">
-              The ledger cannot communicate with the server right now. Displaying locally preserved
-              member roster and cached balances. Offline actions are not queued for automatic
-              synchronization and must be retried once connectivity is restored.
-            </div>
-          </div>
-        </section>
-      )}
-
-      {/* Stale / Balance Verification Incomplete Banner */}
-      {isStale && (
-        <section className="system-banner banner-stale" role="status" aria-live="polite">
-          <div className="banner-icon" aria-hidden="true">
-            <svg
-              aria-hidden="true"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <line x1="12" y1="8" x2="12" y2="12" />
-              <line x1="12" y1="16" x2="12.01" y2="16" />
-            </svg>
-          </div>
-          <div className="banner-content">
-            <div className="banner-title">Stale Balances — Balance Refresh Incomplete</div>
-            <div className="banner-description">
-              {error ??
-                'Balances could not be verified with the server. Displaying previously cached balances.'}
-            </div>
-            <button
-              type="button"
-              className="banner-action-btn"
-              onClick={() => reconcileRoster()}
-              disabled={isReconciling}
-            >
-              {isReconciling ? 'Reconciling...' : 'Reconcile with Server'}
-            </button>
-          </div>
-        </section>
-      )}
-
-      {/* Local Storage Persistence Warning */}
-      {persistenceWarning && (
-        <section className="system-banner banner-warning" role="alert" aria-live="polite">
-          <div className="banner-icon" aria-hidden="true">
-            <svg
-              aria-hidden="true"
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-              <line x1="12" y1="9" x2="12" y2="13" />
-              <line x1="12" y1="17" x2="12.01" y2="17" />
-            </svg>
-          </div>
-          <div className="banner-content">
-            <div className="banner-title">Storage Persistence Warning</div>
-            <div className="banner-description">{persistenceWarning}</div>
-            <button
-              type="button"
-              className="banner-dismiss-btn"
-              onClick={dismissPersistenceWarning}
-            >
-              Dismiss warning
-            </button>
-          </div>
-        </section>
-      )}
-
       {/* Editorial Page Header */}
       <section className="editorial-banner">
         <div className="editorial-header-left">
-          <span className="editorial-eyebrow">Accounting Ledger</span>
-          <h1 className="editorial-title">{session.home.name}</h1>
+          <span className="editorial-eyebrow">Household Ledger</span>
+          <h1 className="editorial-title">{home.name}</h1>
           <p className="editorial-description">
-            Shared living expenses, municipal utilities, and domestic allocations divided equally
-            across active residents.
+            Shared living expenses divided equally across active residents.
           </p>
         </div>
 
         <div className="header-status-badge">
-          <span
-            className={`status-indicator ${isOffline ? 'dot-offline' : isStale ? 'dot-stale' : ''}`}
-            aria-hidden="true"
-          />
-          <span className="status-label">{isOffline || isStale ? 'Status:' : 'Cycle:'}</span>
-          <span className="status-period">
-            {isOffline ? 'Cached View' : isStale ? 'Stale Balances' : 'Active'}
-          </span>
+          <span className="status-indicator" aria-hidden="true" />
+          <span className="status-label">Cycle:</span>
+          <span className="status-period">Active</span>
         </div>
       </section>
 
-      {/* Two-Column Responsive Ledger Composition */}
+      {/* Two-Column Responsive Ledger */}
       <div className="ledger-layout">
-        {/* Left Column: Shared Bills & Expenditures */}
+        {/* Left Column: Bills */}
         <section className="ledger-surface" aria-labelledby="bills-heading">
           <div className="ledger-surface-header">
             <h2 id="bills-heading" className="ledger-surface-title">
-              Shared Bills & Expenditures
+              Bills
             </h2>
             <span className="ledger-surface-meta">
-              {session.bills.length} recorded {session.bills.length === 1 ? 'entry' : 'entries'}
+              {bills.length} recorded {bills.length === 1 ? 'entry' : 'entries'}
             </span>
           </div>
 
@@ -388,12 +240,11 @@ function HouseholdLedgerView() {
             </div>
           </div>
 
-          {/* Actual Bills Ledger Table or Authentic Empty State */}
-          {session.bills.length > 0 ? (
+          {bills.length > 0 ? (
             <table className="ledger-table" aria-label="Shared bills and expenditures">
               <thead>
                 <tr>
-                  <th scope="col">Expenditure / Bill</th>
+                  <th scope="col">Bill</th>
                   <th scope="col" className="bill-allocation-desktop">
                     Allocation
                   </th>
@@ -402,7 +253,7 @@ function HouseholdLedgerView() {
                 </tr>
               </thead>
               <tbody>
-                {session.bills.map((bill) => {
+                {bills.map((bill) => {
                   const pendingSharesCount = bill.shares.filter((s) => s.paidAt === null).length
                   const isFullySettled = pendingSharesCount === 0
 
@@ -427,11 +278,8 @@ function HouseholdLedgerView() {
                           <div className="bill-item">
                             <span className="bill-title">{bill.title}</span>
                             <div className="bill-submeta">
-                              <span className="bill-date">
-                                {formatBillDate(bill.clientCreatedAt)}
-                              </span>
                               <span className="bill-allocation-mobile tabular-numbers">
-                                • {allocationText}
+                                {allocationText}
                               </span>
                             </div>
                           </div>
@@ -460,10 +308,7 @@ function HouseholdLedgerView() {
                             <div className="bill-shares-container">
                               <div className="bill-shares-grid">
                                 {bill.shares.map((share) => {
-                                  const member = session.members.find(
-                                    (m) => m.id === share.memberId,
-                                  )
-                                  const memberName = member ? member.name : 'Resident'
+                                  const memberName = memberMap.get(share.memberId) ?? 'Resident'
                                   const isPaid = share.paidAt !== null
                                   const isProcessing = processingShareId === share.id
 
@@ -502,7 +347,7 @@ function HouseholdLedgerView() {
                                           >
                                             {isProcessing
                                               ? 'Paying...'
-                                              : share.pendingIdempotencyKey
+                                              : keysRef.current.has(share.id)
                                                 ? 'Retry Pay'
                                                 : 'Pay'}
                                           </button>
@@ -542,23 +387,23 @@ function HouseholdLedgerView() {
                   <line x1="10" y1="9" x2="8" y2="9" />
                 </svg>
               </div>
-              <h3 className="empty-ledger-title">No Shared Bills Recorded Yet</h3>
+              <h3 className="empty-ledger-title">No Bills Recorded Yet</h3>
               <p className="empty-ledger-description">
                 When bills are incurred, record them here. Each expense will divide equally among
-                active residents with remainder pennies distributed sequentially.
+                active residents.
               </p>
               <div className="empty-ledger-hint">
                 <span className="badge badge-settled">Ready for Expenses</span>
                 <span>
-                  {session.members.length === 0
+                  {members.length === 0
                     ? 'Add household residents on the right before recording bills.'
-                    : `${session.members.length} resident${session.members.length === 1 ? '' : 's'} enrolled in the allocation roster.`}
+                    : `${members.length} resident${members.length === 1 ? '' : 's'} enrolled.`}
                 </span>
               </div>
             </div>
           )}
 
-          {/* Bill Feedback Notifications */}
+          {/* Bill error/success feedback */}
           {billError && (
             <div
               style={{
@@ -569,21 +414,10 @@ function HouseholdLedgerView() {
                 borderRadius: 'var(--radius-sm)',
                 fontSize: '0.8125rem',
                 color: '#732314',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
               }}
               role="alert"
             >
               <span>{billError}</span>
-              <button
-                type="button"
-                className="banner-dismiss-btn"
-                onClick={dismissBillError}
-                style={{ marginLeft: 'var(--space-3)', color: 'inherit' }}
-              >
-                Dismiss
-              </button>
             </div>
           )}
 
@@ -615,7 +449,7 @@ function HouseholdLedgerView() {
             </div>
           )}
 
-          {/* Payment Feedback Notifications */}
+          {/* Payment error feedback */}
           {paymentError && (
             <div
               style={{
@@ -626,58 +460,18 @@ function HouseholdLedgerView() {
                 borderRadius: 'var(--radius-sm)',
                 fontSize: '0.8125rem',
                 color: '#732314',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
               }}
               role="alert"
               aria-live="assertive"
             >
               <span>{paymentError}</span>
-              <button
-                type="button"
-                className="banner-dismiss-btn"
-                onClick={dismissPaymentError}
-                style={{ marginLeft: 'var(--space-3)', color: 'inherit' }}
-              >
-                Dismiss
-              </button>
-            </div>
-          )}
-
-          {paymentSuccess && (
-            <div
-              style={{
-                margin: 'var(--space-4) var(--space-6) 0',
-                padding: 'var(--space-3) var(--space-4)',
-                backgroundColor: 'var(--color-secondary-light)',
-                border: '1px solid rgba(91, 117, 32, 0.25)',
-                borderRadius: 'var(--radius-sm)',
-                fontSize: '0.8125rem',
-                color: 'var(--color-secondary)',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-              }}
-              role="status"
-              aria-live="polite"
-            >
-              <span>{paymentSuccess}</span>
-              <button
-                type="button"
-                className="banner-dismiss-btn"
-                onClick={dismissPaymentSuccess}
-                style={{ marginLeft: 'var(--space-3)', color: 'inherit' }}
-              >
-                Dismiss
-              </button>
             </div>
           )}
 
           {/* Bill Composer or Action Row */}
           {isComposerOpen ? (
             <BillComposer
-              members={session.members}
+              members={members.map((m) => ({ id: m.memberId, homeId: home.id, name: m.name }))}
               isSubmitting={isSubmittingBill}
               onSubmit={handleRecordBill}
               onCancel={() => setIsComposerOpen(false)}
@@ -698,19 +492,18 @@ function HouseholdLedgerView() {
           )}
         </section>
 
-        {/* Right Column: Member Allocations & Resident Management */}
+        {/* Right Column: Members */}
         <aside className="ledger-surface" aria-labelledby="members-heading">
           <div className="ledger-surface-header">
             <h2 id="members-heading" className="ledger-surface-title">
-              Member Allocations
+              Members
             </h2>
             <span className="badge badge-settled">
-              {session.members.length} {session.members.length === 1 ? 'Resident' : 'Residents'}
+              {members.length} {members.length === 1 ? 'Resident' : 'Residents'}
             </span>
           </div>
 
-          {/* Member Roster in insertion order */}
-          {session.members.length === 0 ? (
+          {members.length === 0 ? (
             <div className="empty-members-box">
               <p>No residents enrolled yet.</p>
               <p style={{ marginTop: '4px', fontSize: '0.8125rem' }}>
@@ -719,12 +512,11 @@ function HouseholdLedgerView() {
             </div>
           ) : (
             <ul className="member-list">
-              {session.members.map((member) => {
-                // Find authoritative balance if available
-                const balanceEntry = session.cachedBalances?.find((b) => b.memberId === member.id)
+              {members.map((member) => {
+                const balanceEntry = balances.find((b) => b.memberId === member.memberId)
 
                 return (
-                  <li key={member.id} className="member-row">
+                  <li key={member.memberId} className="member-row">
                     <div className="member-profile">
                       <div className="member-avatar" aria-hidden="true">
                         {getInitials(member.name)}
@@ -736,12 +528,7 @@ function HouseholdLedgerView() {
                     </div>
 
                     <div className="member-due">
-                      {session.cachedBalances === null ? (
-                        <>
-                          <div className="member-due-unavailable">Unavailable offline</div>
-                          <div className="member-due-label">Offline</div>
-                        </>
-                      ) : balanceEntry !== undefined ? (
+                      {balanceEntry !== undefined ? (
                         balanceEntry.outstandingCents > 0 ? (
                           <>
                             <div className="member-due-amount owes tabular-numbers">
@@ -795,26 +582,8 @@ function HouseholdLedgerView() {
             {memberError && (
               <div className="member-error-container" role="alert" aria-live="assertive">
                 <div className="member-error-text">{memberError}</div>
-                {(pendingMember !== null || memberError.includes('Reconcile')) && (
-                  <button
-                    type="button"
-                    className="member-reconcile-btn"
-                    onClick={() => reconcileRoster()}
-                    disabled={isReconciling}
-                  >
-                    {isReconciling ? 'Checking Server Roster...' : 'Reconcile with Server'}
-                  </button>
-                )}
               </div>
             )}
-          </div>
-
-          <div style={{ padding: '0 var(--space-6) var(--space-6)' }}>
-            <div className="ledger-note-card">
-              <div className="ledger-note-title">Ledger Protocol</div>
-              Every entry divides evenly among active members with penny remainders distributed
-              sequentially. Individual member shares remain marked pending until confirmed.
-            </div>
           </div>
         </aside>
       </div>
