@@ -167,8 +167,6 @@ We will run `pnpm install && pnpm check && pnpm typecheck && pnpm test` on your 
 
 ## AI usage
 
-## AI usage
-
 I used AI tools for this assignment:
 
 - **ChatGPT:** [fonts and ui suggestions]
